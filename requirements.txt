@@ -1,0 +1,10 @@
+jiwer
+rapidfuzz
+requests
+openai
+azure-identity
+python-dotenv
+fastapi
+uvicorn
+python-multipart
+pydantic

@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DocsAI Evals Portal</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path d="M7 3h7l5 5v13H7z" />
+            <path d="M14 3v6h5" />
+            <path d="M10 13h6M10 17h4" />
+          </svg>
+        </div>
+        <div>
+          <strong>DocsAI Evals</strong>
+          <span>OCR quality monitoring</span>
+        </div>
+      </div>
+      <div class="top-actions">
+        <span id="topHealthDot" class="health-dot"></span>
+        <span id="topHealthText">Checking backend</span>
+        <div class="avatar">DE</div>
+      </div>
+    </header>
+
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Main navigation">
+        <button class="nav-item active" type="button" data-section="dashboard" title="Dashboard" aria-label="Dashboard">
+          <svg viewBox="0 0 24 24"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z" /></svg>
+        </button>
+        <button class="nav-item" type="button" data-section="golden" title="Golden Dataset" aria-label="Golden Dataset">
+          <svg viewBox="0 0 24 24"><path d="M5 20h14M12 16V4M7 9l5-5 5 5" /></svg>
+        </button>
+        <button class="nav-item" type="button" data-section="run" title="Run Evaluation" aria-label="Run Evaluation">
+          <svg viewBox="0 0 24 24"><path d="m6 4 14 8-14 8z" /></svg>
+        </button>
+        <button class="nav-item" type="button" data-section="history" title="Run History" aria-label="Run History">
+          <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v6h6M12 7v6l4 2" /></svg>
+        </button>
+        <button class="nav-item" type="button" data-section="reports" title="Reports" aria-label="Reports">
+          <svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z" /><path d="M9 13h6M9 17h5M15 3v4h4" /></svg>
+        </button>
+        <button class="nav-item" type="button" data-section="settings" title="Settings and Health" aria-label="Settings and Health">
+          <svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z" /><path d="M3 12h3M18 12h3M12 3v3M12 18v3" /></svg>
+        </button>
+      </aside>
+
+      <main class="content">
+        <section id="dashboard" class="view active">
+          <div class="page-heading">
+            <div class="heading-icon"><svg viewBox="0 0 24 24"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z" /></svg></div>
+            <div>
+              <h1>OCR Evaluation Dashboard</h1>
+              <p>Monitor DocsAI OCR and LLM extraction quality</p>
+            </div>
+          </div>
+
+          <div id="dashboardError" class="banner error" hidden></div>
+
+          <section class="summary-grid" aria-label="Summary cards">
+            <article class="stat-card">
+              <span>Total Runs</span>
+              <strong id="totalRuns">0</strong>
+            </article>
+            <article class="stat-card">
+              <span>Average F1</span>
+              <strong id="averageF1">0.0000</strong>
+            </article>
+            <article class="stat-card">
+              <span>Average Recall</span>
+              <strong id="averageRecall">0.0000</strong>
+            </article>
+            <article class="stat-card">
+              <span>Worst Performing Field</span>
+              <strong id="worstField">-</strong>
+            </article>
+          </section>
+
+          <section class="card">
+            <div class="section-title">
+              <div>
+                <h2>Latest Scores</h2>
+                <p id="latestReportLabel">No report selected</p>
+              </div>
+              <span id="dashboardHealthPill" class="status-pill partial">CHECKING</span>
+            </div>
+            <div class="score-grid">
+              <div class="score-card"><span>Precision</span><strong id="latestPrecision">-</strong></div>
+              <div class="score-card"><span>Recall</span><strong id="latestRecall">-</strong></div>
+              <div class="score-card"><span>F1 Score</span><strong id="latestF1">-</strong></div>
+              <div class="score-card"><span>Missing Lines</span><strong id="latestMissing">-</strong></div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="section-title">
+              <div>
+                <h2>Recent Reports</h2>
+                <p>Latest saved OCR evaluation runs</p>
+              </div>
+              <button class="secondary-button" type="button" data-section-jump="history">View History</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Report Name</th>
+                    <th>Run ID</th>
+                    <th>Filename</th>
+                    <th>F1</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="recentReportsBody"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section id="golden" class="view">
+          <div class="page-heading">
+            <div class="heading-icon"><svg viewBox="0 0 24 24"><path d="M5 20h14M12 16V4M7 9l5-5 5 5" /></svg></div>
+            <div>
+              <h1>Golden Dataset</h1>
+              <p>Upload the JSONL reference dataset used for OCR evaluation</p>
+            </div>
+          </div>
+
+          <form id="goldenForm" class="upload-card">
+            <div class="section-title">
+              <div>
+                <h2>Upload Golden Dataset</h2>
+                <p>Supported format: JSONL only</p>
+              </div>
+              <span id="goldenStatus" class="status-pill partial">PENDING</span>
+            </div>
+            <label id="dropzone" class="dropzone" for="goldenFile">
+              <input id="goldenFile" type="file" accept=".jsonl" />
+              <span class="drop-icon"><svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M5 20h14" /></svg></span>
+              <strong id="goldenFileName">Drag and drop your JSONL file here</strong>
+              <span>or browse from your computer</span>
+              <button class="secondary-button" type="button" id="browseGolden">Browse File</button>
+            </label>
+            <div class="meta-row">
+              <span>Current file</span>
+              <strong id="currentGdsFile">No upload in this session</strong>
+            </div>
+            <div id="goldenMessage" class="banner" hidden></div>
+            <button id="uploadGoldenButton" class="primary-button" type="submit">Upload Dataset</button>
+          </form>
+        </section>
+
+        <section id="run" class="view">
+          <div class="page-heading">
+            <div class="heading-icon"><svg viewBox="0 0 24 24"><path d="m6 4 14 8-14 8z" /></svg></div>
+            <div>
+              <h1>Run Evaluation</h1>
+              <p>Execute an OCR evaluation for a DocsAI run</p>
+            </div>
+          </div>
+
+          <div class="execute-grid">
+            <form id="evalForm" class="card form-card">
+              <div class="section-title">
+                <div>
+                  <h2>Evaluation Input</h2>
+                  <p>Provide the DocsAI run and matching GDS filename</p>
+                </div>
+                <span id="runStatus" class="status-pill partial">READY</span>
+              </div>
+              <label class="field">
+                <span>DocsAI Run ID</span>
+                <input id="runId" type="text" placeholder="run-..." required />
+              </label>
+              <label class="field">
+                <span>GDS Filename</span>
+                <input id="filename" type="text" placeholder="invoice.pdf" required />
+              </label>
+              <label class="field">
+                <span>Document Type</span>
+                <select id="documentType">
+                  <option value="">Read from golden dataset</option>
+                  <option value="taxInvoice">Tax Invoice</option>
+                  <option value="purchaseOrder">Purchase Order</option>
+                  <option value="proformaInvoice">Proforma Invoice</option>
+                </select>
+              </label>
+              <div id="runMessage" class="banner" hidden></div>
+              <button id="runButton" class="primary-button" type="submit">Run Evaluation</button>
+            </form>
+
+            <section class="card result-card">
+              <div class="section-title">
+                <div>
+                  <h2>Result Summary</h2>
+                  <p id="resultSubtitle">Waiting for evaluation</p>
+                </div>
+                <span id="resultStatus" class="status-pill partial">PARTIAL</span>
+              </div>
+              <dl class="result-list">
+                <div><dt>Run ID</dt><dd id="resultRunId">-</dd></div>
+                <div><dt>Filename</dt><dd id="resultFilename">-</dd></div>
+                <div><dt>OCR Precision</dt><dd id="resultPrecision">-</dd></div>
+                <div><dt>OCR Recall</dt><dd id="resultRecall">-</dd></div>
+                <div><dt>OCR F1</dt><dd id="resultF1">-</dd></div>
+              </dl>
+              <button id="openLatestReport" class="secondary-button" type="button" disabled>Open Full Report</button>
+            </section>
+          </div>
+        </section>
+
+        <section id="history" class="view">
+          <div class="page-heading">
+            <div class="heading-icon"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v6h6M12 7v6l4 2" /></svg></div>
+            <div>
+              <h1>Run History</h1>
+              <p>Track and monitor OCR eval executions</p>
+            </div>
+          </div>
+
+          <section class="toolbar card">
+            <label class="search-box">
+              <svg viewBox="0 0 24 24"><path d="m21 21-5-5" /><circle cx="11" cy="11" r="7" /></svg>
+              <input id="historySearch" type="search" placeholder="Search by report, run ID, or filename..." />
+            </label>
+            <button id="refreshReports" class="primary-button" type="button">Refresh</button>
+          </section>
+          <div id="historyMessage" class="banner" hidden></div>
+
+          <section class="card">
+            <div class="section-title">
+              <div>
+                <h2>Evaluation Runs</h2>
+                <p id="reportCount">0 reports</p>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="history-table">
+                <thead>
+                  <tr>
+                    <th>Report Name</th>
+                    <th>Run ID</th>
+                    <th>Filename</th>
+                    <th><button id="sortF1" class="sort-button" type="button">F1 <span id="sortF1Indicator">down</span></button></th>
+                    <th>Recall</th>
+                    <th>Precision</th>
+                    <th>Timestamp</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="historyBody"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section id="reports" class="view">
+          <div class="page-heading">
+            <div class="heading-icon"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z" /><path d="M9 13h6M9 17h5M15 3v4h4" /></svg></div>
+            <div>
+              <h1>Reports / Details</h1>
+              <p>Open saved reports and inspect field-level quality</p>
+            </div>
+          </div>
+          <section class="card empty-state">
+            <h2>Select a report from Run History</h2>
+            <p>Use View Report to open the detailed comparison modal.</p>
+            <button class="primary-button" type="button" data-section-jump="history">Go to Run History</button>
+          </section>
+        </section>
+
+        <section id="settings" class="view">
+          <div class="page-heading">
+            <div class="heading-icon"><svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z" /><path d="M3 12h3M18 12h3M12 3v3M12 18v3" /></svg></div>
+            <div>
+              <h1>Settings / Health</h1>
+              <p>Runtime connectivity and backend status</p>
+            </div>
+          </div>
+          <section class="card">
+            <div class="section-title">
+              <div>
+                <h2>Backend Health</h2>
+                <p>Current FastAPI status and frontend API base</p>
+              </div>
+              <button id="refreshHealth" class="secondary-button" type="button">Refresh</button>
+            </div>
+            <div id="healthMessage" class="banner" hidden></div>
+            <dl class="settings-list">
+              <div><dt>Status</dt><dd id="healthStatus">Checking</dd></div>
+              <div><dt>API Base URL</dt><dd id="apiBaseUrl">Same origin</dd></div>
+              <div><dt>GDS Path</dt><dd id="healthGdsPath">Not returned by backend</dd></div>
+              <div><dt>Results Path</dt><dd id="healthResultsPath">Not returned by backend</dd></div>
+              <div><dt>Azure OpenAI Configured</dt><dd id="healthOpenAi">Not returned by backend</dd></div>
+            </dl>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <div id="reportModal" class="modal-backdrop" hidden>
+      <section class="report-modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+        <header class="modal-head">
+          <div class="modal-title-group">
+            <div class="modal-icon"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z" /><path d="M9 13h6M9 17h5M15 3v4h4" /></svg></div>
+            <div>
+              <h2 id="modalTitle">Evaluation Report</h2>
+              <p id="modalSubtitle">Report details</p>
+            </div>
+          </div>
+          <button id="closeModal" class="icon-button" type="button" aria-label="Close report">
+            <svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12" /></svg>
+          </button>
+        </header>
+        <div class="modal-summary">
+          <div><span>Run ID</span><strong id="modalRunId">-</strong></div>
+          <div><span>Filename</span><strong id="modalFilename">-</strong></div>
+          <div><span>Precision</span><strong id="modalPrecision">-</strong></div>
+          <div><span>Recall</span><strong id="modalRecall">-</strong></div>
+          <div><span>F1</span><strong id="modalF1">-</strong></div>
+          <div><span>Unresolved</span><strong id="modalUnresolved">-</strong></div>
+        </div>
+        <div class="modal-content">
+          <section class="preview-panel">
+            <h3>Markdown Diff</h3>
+            <div class="diff-grid">
+              <div>
+                <strong>Missing Lines</strong>
+                <pre id="missingLines"></pre>
+              </div>
+              <div>
+                <strong>Added Lines</strong>
+                <pre id="addedLines"></pre>
+              </div>
+            </div>
+          </section>
+          <section class="preview-panel">
+            <h3>Field-Level Evaluation</h3>
+            <div class="table-wrap modal-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Field Name</th>
+                    <th>Status</th>
+                    <th>Golden Value</th>
+                    <th>Extracted Value</th>
+                    <th>Similarity / CER / WER</th>
+                  </tr>
+                </thead>
+                <tbody id="fieldResultsBody"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>
+
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

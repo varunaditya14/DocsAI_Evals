@@ -1,0 +1,12 @@
+{
+  "name": "docsai-evals",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DocsAI OCR evaluation portal",
+  "scripts": {
+    "setup": "node scripts/setup.js",
+    "dev": "node scripts/run-server.js --reload",
+    "start": "node scripts/run-server.js",
+    "clean": "node scripts/clean.js"
+  }
+}
