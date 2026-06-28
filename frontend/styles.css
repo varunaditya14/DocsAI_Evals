@@ -628,6 +628,10 @@ dd {
   z-index: 20;
 }
 
+.modal-backdrop[hidden] {
+  display: none;
+}
+
 .report-modal {
   width: min(1500px, 100%);
   max-height: 90vh;
