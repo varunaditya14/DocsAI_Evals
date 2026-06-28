@@ -1,4 +1,4 @@
-"""Golden dataset JSONL loader."""
+"""Golden dataset loader."""
 
 from __future__ import annotations
 
@@ -57,19 +57,40 @@ def get_gds_path() -> str:
 
 
 def infer_document_type(record: dict[str, Any]) -> str:
-    """Infer a document type from the first supported document key in a record."""
+    """Infer a document type from the first supported document key in a record.
+
+    Checks top-level keys first (flat record format), then falls back to
+    looking inside ``jsonOutput`` / ``json_output`` (nested record format).
+    """
+    # Flat record format: document keys sit directly on the record
     for normalized_type, keys in DOCUMENT_TYPE_KEYS.items():
         if any(key in record for key in keys):
             return normalized_type
+
+    # Nested record format: document keys live inside jsonOutput / json_output
+    json_output = record.get("jsonOutput") or record.get("json_output")
+    if isinstance(json_output, dict):
+        for normalized_type, keys in DOCUMENT_TYPE_KEYS.items():
+            for key in keys:
+                value = json_output.get(key)
+                if isinstance(value, list) and value:
+                    return normalized_type
+
     return ""
 
 
 def _first_document_record(record: dict[str, Any], document_type: str) -> dict[str, Any]:
-    """Return the first document object from a GDS record for a document type."""
+    """Return the first document object from a GDS record for a document type.
+
+    Searches top-level keys first (flat record format), then falls back to
+    looking inside ``jsonOutput`` / ``json_output`` (nested record format).
+    """
     document_keys = _document_keys_for(document_type)
     if not document_keys:
         inferred_type = infer_document_type(record)
         document_keys = _document_keys_for(inferred_type)
+
+    # Flat record format: document arrays sit directly on the record
     for document_key in document_keys:
         value = record.get(document_key)
         if isinstance(value, list) and value:
@@ -77,6 +98,18 @@ def _first_document_record(record: dict[str, Any], document_type: str) -> dict[s
             return first_item if isinstance(first_item, dict) else {}
         if isinstance(value, dict):
             return value
+
+    # Nested record format: document arrays live inside jsonOutput / json_output
+    json_output = record.get("jsonOutput") or record.get("json_output")
+    if isinstance(json_output, dict):
+        for document_key in document_keys:
+            value = json_output.get(document_key)
+            if isinstance(value, list) and value:
+                first_item = value[0]
+                return first_item if isinstance(first_item, dict) else {}
+            if isinstance(value, dict):
+                return value
+
     logger.warning("No GDS expected fields found for document type: %s", document_type)
     return {}
 
@@ -87,29 +120,53 @@ def _available_filenames(records: list[dict[str, Any]]) -> list[str]:
 
 
 def load_all_golden() -> list[dict[str, Any]]:
-    """Load all golden dataset records from the configured JSONL file."""
+    """Load all golden dataset records from the configured golden dataset file."""
     gds_path = get_gds_path()
-    records: list[dict[str, Any]] = []
 
     try:
-        with open(gds_path, "r", encoding="utf-8") as handle:
-            for line_number, line in enumerate(handle, start=1):
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    record = json.loads(stripped)
-                except json.JSONDecodeError as exc:
-                    raise RuntimeError(
-                        f"Invalid JSON in golden dataset at line {line_number}."
-                    ) from exc
-                if not isinstance(record, dict):
-                    raise RuntimeError(
-                        f"Golden dataset line {line_number} must be a JSON object."
-                    )
-                records.append(record)
+        with open(gds_path, "r", encoding="utf-8-sig") as handle:
+            raw_text = handle.read()
     except OSError as exc:
         raise RuntimeError(f"Unable to read golden dataset file: {gds_path}") from exc
+
+    if not raw_text.strip():
+        return []
+
+    try:
+        data = json.loads(raw_text)
+    except json.JSONDecodeError:
+        records: list[dict[str, Any]] = []
+        for line_number, line in enumerate(raw_text.splitlines(), start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                record = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    f"Invalid JSON in golden dataset at line {line_number}."
+                ) from exc
+            if not isinstance(record, dict):
+                raise RuntimeError(
+                    f"Golden dataset line {line_number} must be a JSON object."
+                )
+            records.append(record)
+        return records
+
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        raise RuntimeError(
+            f"Golden dataset file must contain a JSON array of records: {gds_path}"
+        )
+
+    records = []
+    for index, record in enumerate(data):
+        if not isinstance(record, dict):
+            raise RuntimeError(
+                f"Golden dataset entry at index {index} must be a JSON object."
+            )
+        records.append(record)
 
     return records
 

@@ -160,6 +160,32 @@ def run_ocr_eval(run_id: str, filename: str) -> dict[str, Any]:
         golden_fields = get_expected_fields_from_record(golden_record, document_type)
         field_types = get_field_types_from_record(golden_record, document_type)
 
+        if not golden_fields:
+            json_output = (
+                golden_record.get("jsonOutput")
+                or golden_record.get("json_output")
+                or {}
+            )
+            for candidate_type in SUPPORTED_DOCUMENT_KEYS:
+                entries = json_output.get(candidate_type)
+                if entries and isinstance(entries, list):
+                    candidate_fields = get_expected_fields_from_record(golden_record, candidate_type)
+                    if candidate_fields:
+                        document_type = candidate_type
+                        golden_fields = candidate_fields
+                        field_types = get_field_types_from_record(golden_record, candidate_type)
+                        logger.warning(
+                            "document_type was empty for '%s'; fell back to '%s' from jsonOutput.",
+                            filename,
+                            document_type,
+                        )
+                        break
+            else:
+                logger.warning(
+                    "No golden fields resolved for '%s' after fallback — field-level metrics will be empty.",
+                    filename,
+                )
+
         if not isinstance(golden_fields, dict):
             raise HTTPException(status_code=422, detail="Eval calculation error: golden fields must be an object.")
         if not isinstance(field_types, dict):
@@ -288,14 +314,6 @@ def _parse_golden_upload(filename: str, content: bytes) -> list[dict[str, Any]]:
         return records
 
     raise HTTPException(status_code=400, detail="Golden dataset must be .jsonl or .json")
-
-
-def _records_to_jsonl(records: list[dict[str, Any]]) -> bytes:
-    """Convert validated golden records into normalized JSONL bytes."""
-    text = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
-    if text:
-        text += "\n"
-    return text.encode("utf-8")
 
 
 def _load_report_files() -> list[dict[str, Any]]:
@@ -430,7 +448,7 @@ def debug_docsai_run(
 
 @app.post("/api/golden/upload")
 async def upload_golden_dataset(file: UploadFile = File(...)) -> dict[str, Any]:
-    """Upload and store the golden dataset JSONL file at the configured GDS path."""
+    """Upload and store the golden dataset file at the configured GDS path."""
     filename = file.filename or ""
     content = await file.read()
     records = _parse_golden_upload(filename, content)
@@ -445,8 +463,13 @@ async def upload_golden_dataset(file: UploadFile = File(...)) -> dict[str, Any]:
         os.makedirs(parent_dir, exist_ok=True)
 
     try:
+        normalized_text = content.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Golden dataset must be UTF-8 JSON.") from exc
+
+    try:
         with open(gds_path, "wb") as handle:
-            handle.write(_records_to_jsonl(records))
+            handle.write(normalized_text.encode("utf-8"))
     except OSError as exc:
         raise HTTPException(status_code=500, detail="Unable to save golden dataset.") from exc
 
