@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DocsAI Evals Portal</title>
-    <link rel="stylesheet" href="/assets/styles.css" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260629-gds-duplicates" />
   </head>
   <body>
     <header class="topbar">
@@ -141,7 +141,7 @@
               <span id="goldenStatus" class="status-pill partial">PENDING</span>
             </div>
             <label id="dropzone" class="dropzone" for="goldenFile">
-              <input id="goldenFile" type="file" accept=".jsonl" />
+              <input id="goldenFile" type="file"/>
               <span class="drop-icon"><svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M5 20h14" /></svg></span>
               <strong id="goldenFileName">Drag and drop your JSONL file here</strong>
               <span>or browse from your computer</span>
@@ -193,6 +193,10 @@
               </label>
               <div id="runMessage" class="banner" hidden></div>
               <button id="runButton" class="primary-button" type="submit">Run Evaluation</button>
+              <div class="debug-actions">
+                <button id="testOcrOnly" class="debug-link" type="button">Test OCR Only</button>
+                <button id="testLlmOnly" class="debug-link" type="button">Test LLM Only</button>
+              </div>
             </form>
 
             <section class="card result-card">
@@ -206,13 +210,44 @@
               <dl class="result-list">
                 <div><dt>Run ID</dt><dd id="resultRunId">-</dd></div>
                 <div><dt>Filename</dt><dd id="resultFilename">-</dd></div>
-                <div><dt>OCR Precision</dt><dd id="resultPrecision">-</dd></div>
-                <div><dt>OCR Recall</dt><dd id="resultRecall">-</dd></div>
-                <div><dt>OCR F1</dt><dd id="resultF1">-</dd></div>
               </dl>
+              <div class="run-output-grid">
+                <article class="run-output-card combined-output">
+                  <span>Evals Report</span>
+                  <strong id="resultF1">-</strong>
+                  <small>Precision <b id="resultPrecision">-</b> / Recall <b id="resultRecall">-</b></small>
+                </article>
+                <article class="run-output-card">
+                  <span>OCR Evaluation</span>
+                  <strong id="resultOcrF1">-</strong>
+                  <small>Precision <b id="resultOcrPrecision">-</b> / Recall <b id="resultOcrRecall">-</b></small>
+                </article>
+                <article class="run-output-card">
+                  <span>LLM Evaluation</span>
+                  <strong id="resultLlmF1">-</strong>
+                  <small>Precision <b id="resultLlmPrecision">-</b> / Recall <b id="resultLlmRecall">-</b></small>
+                </article>
+              </div>
+              <div class="run-counts-grid">
+                <div><span>OCR Missing Lines</span><strong id="resultOcrMissing">-</strong></div>
+                <div><span>OCR Fields</span><strong id="resultOcrFields">-</strong></div>
+                <div><span>LLM TP</span><strong id="resultLlmTp">-</strong></div>
+                <div><span>LLM FP</span><strong id="resultLlmFp">-</strong></div>
+                <div><span>LLM FN</span><strong id="resultLlmFn">-</strong></div>
+                <div><span>LLM GREY</span><strong id="resultLlmGrey">-</strong></div>
+              </div>
               <button id="openLatestReport" class="secondary-button" type="button" disabled>Open Full Report</button>
             </section>
           </div>
+          <section id="debugOutputPanel" class="card debug-output" hidden>
+            <div class="section-title">
+              <div>
+                <h2 id="debugOutputTitle">Evaluation Debug Output</h2>
+              </div>
+              <button id="closeDebugOutput" class="secondary-button" type="button">Hide</button>
+            </div>
+            <pre id="debugOutputPre"></pre>
+          </section>
         </section>
 
         <section id="history" class="view">
@@ -245,18 +280,25 @@
                 <thead>
                   <tr>
                     <th>Report Name</th>
-                    <th>Run ID</th>
                     <th>Filename</th>
-                    <th><button id="sortF1" class="sort-button" type="button">F1 <span id="sortF1Indicator">down</span></button></th>
-                    <th>Recall</th>
-                    <th>Precision</th>
-                    <th>Timestamp</th>
+                    <th><button id="sortF1" class="sort-button" type="button">Evals F1 <span id="sortF1Indicator">down</span></button></th>
+                    <th>OCR F1</th>
+                    <th>LLM F1</th>
                     <th>Status</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody id="historyBody"></tbody>
               </table>
+            </div>
+            <div class="history-pagination">
+              <button id="historyPrev" class="icon-action pagination-arrow" type="button" aria-label="Previous page">
+                <svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></svg>
+              </button>
+              <span id="historyPageLabel">Page 1 of 1</span>
+              <button id="historyNext" class="icon-action pagination-arrow" type="button" aria-label="Next page">
+                <svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></svg>
+              </button>
             </div>
           </section>
         </section>
@@ -324,46 +366,73 @@
         <div class="modal-summary">
           <div><span>Run ID</span><strong id="modalRunId">-</strong></div>
           <div><span>Filename</span><strong id="modalFilename">-</strong></div>
-          <div><span>Precision</span><strong id="modalPrecision">-</strong></div>
-          <div><span>Recall</span><strong id="modalRecall">-</strong></div>
-          <div><span>F1</span><strong id="modalF1">-</strong></div>
-          <div><span>Unresolved</span><strong id="modalUnresolved">-</strong></div>
+          <div><span>Evals Report F1</span><strong id="combinedModalF1" class="combined-f1">-</strong></div>
+          <div><span>Evals Report Precision</span><strong id="combinedModalPrecision">-</strong></div>
+          <div><span>Evals Report Recall</span><strong id="combinedModalRecall">-</strong></div>
         </div>
         <div class="modal-content">
-          <section class="preview-panel">
-            <h3>Markdown Diff</h3>
-            <div class="diff-grid">
-              <div>
-                <strong>Missing Lines</strong>
-                <pre id="missingLines"></pre>
-              </div>
-              <div>
-                <strong>Added Lines</strong>
-                <pre id="addedLines"></pre>
-              </div>
+          <section class="preview-panel eval-section">
+            <h3>OCR Evaluation</h3>
+            <div class="eval-stat-grid">
+              <div><span>F1</span><strong id="ocrModalF1">-</strong></div>
+              <div><span>Precision</span><strong id="ocrModalPrecision">-</strong></div>
+              <div><span>Recall</span><strong id="ocrModalRecall">-</strong></div>
+              <div><span>Missing Lines</span><strong id="ocrMissingCount">-</strong></div>
+              <div><span>Added Lines</span><strong id="ocrAddedCount">-</strong></div>
             </div>
-          </section>
-          <section class="preview-panel">
-            <h3>Field-Level Evaluation</h3>
             <div class="table-wrap modal-table">
               <table>
                 <thead>
                   <tr>
-                    <th>Field Name</th>
+                    <th>Field</th>
+                    <th>CER</th>
+                    <th>WER</th>
+                    <th>Fuzzy Score</th>
                     <th>Status</th>
-                    <th>Golden Value</th>
-                    <th>Extracted Value</th>
-                    <th>Similarity / CER / WER</th>
                   </tr>
                 </thead>
-                <tbody id="fieldResultsBody"></tbody>
+                <tbody id="ocrFieldResultsBody"></tbody>
               </table>
+            </div>
+          </section>
+          <section id="llmSection" class="preview-panel eval-section">
+            <h3>LLM Evaluation</h3>
+            <p id="legacyLlmNote" class="legacy-note" hidden>LLM eval not available for this report</p>
+            <div class="eval-stat-grid">
+              <div><span>F1</span><strong id="llmModalF1">-</strong></div>
+              <div><span>Precision</span><strong id="llmModalPrecision">-</strong></div>
+              <div><span>Recall</span><strong id="llmModalRecall">-</strong></div>
+              <div><span>TP</span><strong id="llmTp">-</strong></div>
+              <div><span>FP</span><strong id="llmFp">-</strong></div>
+              <div><span>FN</span><strong id="llmFn">-</strong></div>
+              <div><span>GREY</span><strong id="llmGrey">-</strong></div>
+            </div>
+            <div class="table-wrap modal-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Field</th>
+                    <th>Expected Value</th>
+                    <th>Extracted Value</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="llmFieldResultsBody"></tbody>
+              </table>
+            </div>
+          </section>
+          <section id="combinedSection" class="preview-panel eval-section combined-panel">
+            <h3>Evals Report</h3>
+            <div class="eval-stat-grid combined-stats">
+              <div><span>F1</span><strong id="combinedSectionF1" class="combined-f1">-</strong></div>
+              <div><span>Precision</span><strong id="combinedSectionPrecision">-</strong></div>
+              <div><span>Recall</span><strong id="combinedSectionRecall">-</strong></div>
             </div>
           </section>
         </div>
       </section>
     </div>
 
-    <script src="/assets/app.js"></script>
+    <script src="/assets/app.js?v=20260629-gds-duplicates"></script>
   </body>
 </html>

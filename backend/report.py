@@ -24,34 +24,55 @@ def _round_floats(value: Any) -> Any:
 def save_report(
     run_id: str,
     filename: str,
-    diff_result: dict[str, Any],
-    jiwer_result: dict[str, Any],
-    fuzz_result: dict[str, Any],
-    f1_scores: dict[str, Any],
     document_type: str | None = None,
+    eval_type: str = "full",
+    diff_result: dict[str, Any] | None = None,
+    jiwer_result: dict[str, Any] | None = None,
+    fuzz_result: dict[str, Any] | None = None,
+    ocr_f1: dict[str, Any] | None = None,
+    llm_comparison_result: dict[str, Any] | None = None,
+    llm_f1: dict[str, Any] | None = None,
+    combined_scores: dict[str, Any] | None = None,
+    evals_report: dict[str, Any] | None = None,
 ) -> str:
-    """Save an OCR evaluation report JSON file and return its path."""
+    """Save an evaluation report JSON file and return its path."""
     settings = get_settings()
     os.makedirs(settings.results_path, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    report_path = os.path.join(settings.results_path, f"{run_id}_{timestamp}_ocr_eval.json")
+    suffix_by_type = {
+        "ocr": "ocr_eval",
+        "llm": "llm_eval",
+        "full": "evals_report",
+    }
+    report_suffix = suffix_by_type.get(eval_type, "evals_report")
+    report_path = os.path.join(settings.results_path, f"{run_id}_{timestamp}_{report_suffix}.json")
     collision_count = 1
     while os.path.exists(report_path):
         report_path = os.path.join(
             settings.results_path,
-            f"{run_id}_{timestamp}_{collision_count}_ocr_eval.json",
+            f"{run_id}_{timestamp}_{collision_count}_{report_suffix}.json",
         )
         collision_count += 1
+    overall_scores = evals_report or combined_scores or ocr_f1 or llm_f1 or {}
     payload = {
         "run_id": run_id,
         "filename": filename,
         "document_type": document_type,
+        "eval_type": eval_type,
         "report_filename": os.path.basename(report_path),
         "timestamp": timestamp,
-        "diff_result": diff_result,
-        "jiwer_result": jiwer_result,
-        "fuzz_result": fuzz_result,
-        "f1_scores": f1_scores,
+        "ocr_eval": {
+            "diff_result": diff_result or {},
+            "jiwer_result": jiwer_result or {},
+            "fuzz_result": fuzz_result or {},
+            "f1_scores": ocr_f1 or {},
+        },
+        "llm_eval": {
+            "field_comparison": llm_comparison_result or {},
+            "f1_scores": llm_f1 or {},
+        },
+        "evals_report": overall_scores,
+        "combined": combined_scores or {},
     }
 
     try:
