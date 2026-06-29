@@ -41,6 +41,7 @@ EVAL_FIELD_KEYS = (
     "terms",
     "sales",
     "rqNo",
+    "lineItems"
 )
 
 

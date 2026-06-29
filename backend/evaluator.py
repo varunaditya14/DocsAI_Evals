@@ -97,6 +97,7 @@ def run_rapidfuzz_per_field(
         field_type = _field_type_for(field, field_types)
         golden_text = "" if golden_value is None else str(golden_value)
         extracted_text = "" if extracted_value is None else str(extracted_value)
+        llm_judgde_status: bool = False
 
         if extracted_text == "" and golden_text != "":
             status = "FN"
@@ -126,6 +127,7 @@ def run_rapidfuzz_per_field(
                 status = "FP"
             else:
                 status = "GREY"
+                llm_judgde_status = True
                 grey_zone.append(
                     {
                         "field": field,
@@ -141,7 +143,7 @@ def run_rapidfuzz_per_field(
             "field_type": field_type,
             "score": score,
             "status": status,
-            "llm_judged": False,
+            "llm_judged": llm_judgde_status,
         }
 
     return results, grey_zone
