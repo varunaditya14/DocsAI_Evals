@@ -258,3 +258,87 @@ def calculate_f1(field_results: dict[str, dict[str, Any]]) -> dict[str, float | 
         "recall": round(recall, 4),
         "f1": round(f1, 4),
     }
+
+
+def run_llm_field_comparison(
+    golden_fields: dict[str, Any],
+    llm_fields: dict[str, Any],
+    field_types: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Compare expected GDS fields against DocsAI LLM extracted fields."""
+    results: dict[str, dict[str, Any]] = {}
+
+    for field, golden_value in golden_fields.items():
+        extracted_value = llm_fields.get(field)
+        field_type = _field_type_for(field, field_types)
+        golden_text = "" if golden_value is None else str(golden_value)
+        extracted_text = "" if extracted_value is None else str(extracted_value)
+        score: float | None = None
+
+        if field not in llm_fields or extracted_text.strip() == "":
+            status = "FN"
+        elif field_type == "date":
+            status = "TP" if golden_text.strip() == extracted_text.strip() else "FP"
+        elif field_type == "numeric":
+            golden_float = _as_float(golden_text)
+            extracted_float = _as_float(extracted_text)
+            status = (
+                "TP"
+                if golden_float is not None
+                and extracted_float is not None
+                and golden_float == extracted_float
+                else "FP"
+            )
+        else:
+            score = round(float(fuzz.ratio(golden_text, extracted_text)), 4)
+            if score >= 90:
+                status = "TP"
+            elif score < 70:
+                status = "FP"
+            else:
+                # GREY zone LLM judge intentionally skipped.
+                status = "GREY"
+
+        results[field] = {
+            "status": status,
+            "golden_value": golden_text,
+            "extracted_value": extracted_text,
+            "score": score,
+            "field_type": field_type,
+        }
+
+    for field, extracted_value in llm_fields.items():
+        if field in golden_fields:
+            continue
+        field_type = _field_type_for(field, field_types)
+        results[field] = {
+            "status": "FP",
+            "golden_value": "",
+            "extracted_value": "" if extracted_value is None else str(extracted_value),
+            "score": None,
+            "field_type": field_type,
+        }
+
+    return results
+
+
+def calculate_llm_f1(llm_field_results: dict[str, dict[str, Any]]) -> dict[str, float | int]:
+    """Calculate LLM precision, recall, F1, and grey count from field statuses."""
+    tp = sum(1 for result in llm_field_results.values() if result.get("status") == "TP")
+    fp = sum(1 for result in llm_field_results.values() if result.get("status") == "FP")
+    fn = sum(1 for result in llm_field_results.values() if result.get("status") == "FN")
+    grey_count = sum(1 for result in llm_field_results.values() if result.get("status") == "GREY")
+
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+
+    return {
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "grey_count": grey_count,
+        "precision": round(precision, 4),
+        "recall": round(recall, 4),
+        "f1": round(f1, 4),
+    }

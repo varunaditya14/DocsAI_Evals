@@ -1,8 +1,12 @@
 const state = {
   reports: [],
   reportCache: new Map(),
+  sortByF1: false,
   f1SortDirection: "desc",
+  historyPage: 1,
+  historyPageSize: 5,
   latestReport: null,
+  currentRunReport: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -41,6 +45,12 @@ const els = {
   runStatus: $("#runStatus"),
   runMessage: $("#runMessage"),
   runButton: $("#runButton"),
+  testOcrOnly: $("#testOcrOnly"),
+  testLlmOnly: $("#testLlmOnly"),
+  debugOutputPanel: $("#debugOutputPanel"),
+  debugOutputTitle: $("#debugOutputTitle"),
+  debugOutputPre: $("#debugOutputPre"),
+  closeDebugOutput: $("#closeDebugOutput"),
   resultSubtitle: $("#resultSubtitle"),
   resultStatus: $("#resultStatus"),
   resultRunId: $("#resultRunId"),
@@ -48,6 +58,18 @@ const els = {
   resultPrecision: $("#resultPrecision"),
   resultRecall: $("#resultRecall"),
   resultF1: $("#resultF1"),
+  resultOcrF1: $("#resultOcrF1"),
+  resultOcrPrecision: $("#resultOcrPrecision"),
+  resultOcrRecall: $("#resultOcrRecall"),
+  resultOcrMissing: $("#resultOcrMissing"),
+  resultOcrFields: $("#resultOcrFields"),
+  resultLlmF1: $("#resultLlmF1"),
+  resultLlmPrecision: $("#resultLlmPrecision"),
+  resultLlmRecall: $("#resultLlmRecall"),
+  resultLlmTp: $("#resultLlmTp"),
+  resultLlmFp: $("#resultLlmFp"),
+  resultLlmFn: $("#resultLlmFn"),
+  resultLlmGrey: $("#resultLlmGrey"),
   openLatestReport: $("#openLatestReport"),
   historySearch: $("#historySearch"),
   refreshReports: $("#refreshReports"),
@@ -56,6 +78,9 @@ const els = {
   sortF1: $("#sortF1"),
   sortF1Indicator: $("#sortF1Indicator"),
   historyBody: $("#historyBody"),
+  historyPrev: $("#historyPrev"),
+  historyNext: $("#historyNext"),
+  historyPageLabel: $("#historyPageLabel"),
   refreshHealth: $("#refreshHealth"),
   healthMessage: $("#healthMessage"),
   healthStatus: $("#healthStatus"),
@@ -70,13 +95,29 @@ const els = {
   modalSubtitle: $("#modalSubtitle"),
   modalRunId: $("#modalRunId"),
   modalFilename: $("#modalFilename"),
-  modalPrecision: $("#modalPrecision"),
-  modalRecall: $("#modalRecall"),
-  modalF1: $("#modalF1"),
-  modalUnresolved: $("#modalUnresolved"),
-  missingLines: $("#missingLines"),
-  addedLines: $("#addedLines"),
-  fieldResultsBody: $("#fieldResultsBody"),
+  combinedModalF1: $("#combinedModalF1"),
+  combinedModalPrecision: $("#combinedModalPrecision"),
+  combinedModalRecall: $("#combinedModalRecall"),
+  ocrModalF1: $("#ocrModalF1"),
+  ocrModalPrecision: $("#ocrModalPrecision"),
+  ocrModalRecall: $("#ocrModalRecall"),
+  ocrMissingCount: $("#ocrMissingCount"),
+  ocrAddedCount: $("#ocrAddedCount"),
+  ocrFieldResultsBody: $("#ocrFieldResultsBody"),
+  llmSection: $("#llmSection"),
+  legacyLlmNote: $("#legacyLlmNote"),
+  llmModalF1: $("#llmModalF1"),
+  llmModalPrecision: $("#llmModalPrecision"),
+  llmModalRecall: $("#llmModalRecall"),
+  llmTp: $("#llmTp"),
+  llmFp: $("#llmFp"),
+  llmFn: $("#llmFn"),
+  llmGrey: $("#llmGrey"),
+  llmFieldResultsBody: $("#llmFieldResultsBody"),
+  combinedSection: $("#combinedSection"),
+  combinedSectionF1: $("#combinedSectionF1"),
+  combinedSectionPrecision: $("#combinedSectionPrecision"),
+  combinedSectionRecall: $("#combinedSectionRecall"),
 };
 
 const api = {
@@ -84,7 +125,12 @@ const api = {
     const response = await fetch(path, options);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(payload.detail || `Request failed with HTTP ${response.status}`);
+      const detail = payload.detail || `Request failed with HTTP ${response.status}`;
+      const message = typeof detail === "string" ? detail : detail.message || `Request failed with HTTP ${response.status}`;
+      const error = new Error(message);
+      error.status = response.status;
+      error.detail = detail;
+      throw error;
     }
     return payload;
   },
@@ -100,11 +146,33 @@ const api = {
   report(name) {
     return this.request(`/api/evaluations/reports/${encodeURIComponent(name)}`);
   },
-  uploadGolden(formData) {
-    return this.request("/api/golden/upload", { method: "POST", body: formData });
+  uploadGolden(formData, duplicateAction = "reject") {
+    const query = new URLSearchParams({ duplicate_action: duplicateAction });
+    return this.request(`/api/golden/upload?${query.toString()}`, { method: "POST", body: formData });
   },
   runEvaluation(body) {
     return this.request("/api/evaluations/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  },
+  runFullEvaluation(body) {
+    return this.request("/api/evaluations/run/full", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  },
+  runOcrEvaluation(body) {
+    return this.request("/api/evaluations/ocr", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  },
+  runLlmEvaluation(body) {
+    return this.request("/api/evaluations/llm", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -123,6 +191,18 @@ function escapeHtml(value) {
 
 function formatScore(value) {
   return typeof value === "number" ? value.toFixed(4) : "-";
+}
+
+function setText(element, value) {
+  if (element) element.textContent = value;
+}
+
+function setHidden(element, hidden) {
+  if (element) element.hidden = hidden;
+}
+
+function setClassName(element, value) {
+  if (element) element.className = value;
 }
 
 function setBanner(element, message, type = "error") {
@@ -153,7 +233,7 @@ function statusClass(status) {
   if (["TP", "PASS", "COMPLETED"].includes(normalized)) return "completed";
   if (["FP", "FAIL", "FAILED"].includes(normalized)) return "failed";
   if (["FN", "MISSING"].includes(normalized)) return "missing";
-  if (normalized === "UNRESOLVED") return "unresolved";
+  if (["GREY", "UNRESOLVED", "UNCERTAIN"].includes(normalized)) return "unresolved";
   return "partial";
 }
 
@@ -162,6 +242,7 @@ function statusLabel(status) {
   if (normalized === "TP") return "PASS";
   if (normalized === "FP") return "FAIL";
   if (normalized === "FN") return "MISSING";
+  if (normalized === "GREY") return "UNCERTAIN";
   return normalized || "PARTIAL";
 }
 
@@ -169,11 +250,106 @@ function statusPill(status) {
   return `<span class="status-pill ${statusClass(status)}">${escapeHtml(statusLabel(status))}</span>`;
 }
 
+function reportName(report) {
+  return report.report_name || report.report_filename || report.name || "";
+}
+
+function rememberCurrentRun(report) {
+  state.currentRunReport = report;
+  state.latestReport = report;
+  const name = reportName(report);
+  if (name) state.reportCache.set(name, report);
+}
+
+function reportRunTime(report) {
+  const modified = Number(report.modified || 0);
+  if (modified) return modified;
+  const timestamp = String(report.timestamp || "");
+  const compactTimestamp = timestamp.match(/^(\d{8})_(\d{6})$/);
+  if (compactTimestamp) {
+    const [, datePart, timePart] = compactTimestamp;
+    const parsed = Date.parse(
+      `${datePart.slice(0, 4)}-${datePart.slice(4, 6)}-${datePart.slice(6, 8)}T${timePart.slice(0, 2)}:${timePart.slice(2, 4)}:${timePart.slice(4, 6)}Z`,
+    );
+    return Number.isNaN(parsed) ? 0 : parsed / 1000;
+  }
+  return 0;
+}
+
+function ocrEval(report) {
+  if (report.ocr_eval?.diff_result || report.ocr_eval?.f1_scores) return report.ocr_eval;
+  if (report.ocr_eval?.f1 !== undefined) {
+    return {
+      diff_result: { total_missing: report.ocr_eval.missing_lines ?? 0, total_added: 0 },
+      jiwer_result: {},
+      fuzz_result: {},
+      f1_scores: {
+        f1: report.ocr_eval.f1,
+        precision: report.ocr_eval.precision,
+        recall: report.ocr_eval.recall,
+      },
+      field_count: report.ocr_eval.field_count,
+    };
+  }
+  return {
+    diff_result: report.diff_result || {},
+    jiwer_result: report.jiwer_result || {},
+    fuzz_result: report.fuzz_result || {},
+    f1_scores: report.f1_scores || report.ocr_eval || {},
+  };
+}
+
+function ocrScores(report) {
+  return ocrEval(report).f1_scores || report.ocr_eval || {};
+}
+
+function hasObjectEntries(value) {
+  return value && typeof value === "object" && Object.keys(value).length > 0;
+}
+
+function llmEval(report) {
+  if (!report.llm_eval) return null;
+  if (hasObjectEntries(report.llm_eval.field_comparison) || hasObjectEntries(report.llm_eval.f1_scores)) {
+    return report.llm_eval;
+  }
+  return null;
+}
+
+function llmScores(report) {
+  if (report.llm_eval?.f1_scores) return report.llm_eval.f1_scores;
+  if (report.llm_eval?.f1 !== undefined) return report.llm_eval;
+  return {};
+}
+
+function combinedScores(report) {
+  if (report.evals_report) return report.evals_report;
+  if (report.combined) return report.combined;
+  const llm = llmScores(report);
+  if (Object.keys(llm).length && !Object.keys(ocrScores(report)).length) {
+    return {
+      f1: llm.f1,
+      precision: llm.precision,
+      recall: llm.recall,
+    };
+  }
+  const scores = ocrScores(report);
+  return {
+    f1: scores.f1,
+    precision: scores.precision,
+    recall: scores.recall,
+  };
+}
+
+function statusRowClass(status) {
+  return `status-row ${statusClass(status)}`;
+}
+
 function overallStatus(report) {
-  const scores = report.f1_scores || {};
-  if (scores.unresolved_count > 0) return "PARTIAL";
-  if (typeof scores.f1 === "number" && scores.f1 >= 0.9) return "COMPLETED";
-  if (typeof scores.f1 === "number" && scores.f1 > 0) return "PARTIAL";
+  const llm = llmScores(report);
+  const ocr = ocrScores(report);
+  if ((ocr.unresolved_count || 0) > 0 || (llm.grey_count || 0) > 0) return "PARTIAL";
+  if (report.status) return report.status;
+  if (report.eval_type || report.report_name || report.report_filename || report.name) return "COMPLETED";
   return "FAILED";
 }
 
@@ -193,8 +369,11 @@ function filteredReports() {
       );
     })
     .sort((a, b) => {
-      const af1 = typeof a.f1_scores?.f1 === "number" ? a.f1_scores.f1 : -1;
-      const bf1 = typeof b.f1_scores?.f1 === "number" ? b.f1_scores.f1 : -1;
+      if (!state.sortByF1) {
+        return reportRunTime(b) - reportRunTime(a);
+      }
+      const af1 = typeof combinedScores(a).f1 === "number" ? combinedScores(a).f1 : -1;
+      const bf1 = typeof combinedScores(b).f1 === "number" ? combinedScores(b).f1 : -1;
       return (af1 - bf1) * direction;
     });
 }
@@ -219,15 +398,15 @@ function renderRecentReports() {
   }
   els.recentReportsBody.innerHTML = reports
     .map((report) => {
-      const scores = report.f1_scores || {};
+      const scores = combinedScores(report);
       return `
         <tr>
-          <td>${escapeHtml(report.name)}</td>
+          <td>${escapeHtml(reportName(report))}</td>
           <td>${escapeHtml(report.run_id || "-")}</td>
           <td>${escapeHtml(report.filename || "-")}</td>
           <td>${formatScore(scores.f1)}</td>
           <td>${statusPill(overallStatus(report))}</td>
-          <td>${reportActionButtons(report.name)}</td>
+          <td>${reportActionButtons(reportName(report))}</td>
         </tr>
       `;
     })
@@ -237,27 +416,38 @@ function renderRecentReports() {
 function renderHistory() {
   const reports = filteredReports();
   els.reportCount.textContent = `${reports.length} report${reports.length === 1 ? "" : "s"}`;
-  els.sortF1Indicator.textContent = state.f1SortDirection === "asc" ? "up" : "down";
+  els.sortF1Indicator.textContent = state.sortByF1 ? (state.f1SortDirection === "asc" ? "up" : "down") : "sort";
+  const totalPages = Math.max(1, Math.ceil(reports.length / state.historyPageSize));
+  state.historyPage = Math.min(Math.max(state.historyPage, 1), totalPages);
 
   if (!reports.length) {
-    els.historyBody.innerHTML = '<tr><td colspan="9" class="empty-row">No reports found</td></tr>';
+    els.historyBody.innerHTML = '<tr><td colspan="7" class="empty-row">No reports found</td></tr>';
+    if (els.historyPageLabel) els.historyPageLabel.textContent = "Page 0 of 0";
+    if (els.historyPrev) els.historyPrev.disabled = true;
+    if (els.historyNext) els.historyNext.disabled = true;
     return;
   }
 
-  els.historyBody.innerHTML = reports
+  const start = (state.historyPage - 1) * state.historyPageSize;
+  const pageReports = reports.slice(start, start + state.historyPageSize);
+  if (els.historyPageLabel) els.historyPageLabel.textContent = `Page ${state.historyPage} of ${totalPages}`;
+  if (els.historyPrev) els.historyPrev.disabled = state.historyPage <= 1;
+  if (els.historyNext) els.historyNext.disabled = state.historyPage >= totalPages;
+
+  els.historyBody.innerHTML = pageReports
     .map((report) => {
-      const scores = report.f1_scores || {};
+      const scores = combinedScores(report);
+      const ocr = ocrScores(report);
+      const llm = llmScores(report);
       return `
         <tr>
-          <td>${escapeHtml(report.name)}</td>
-          <td>${escapeHtml(report.run_id || "-")}</td>
+          <td>${escapeHtml(reportName(report))}</td>
           <td>${escapeHtml(report.filename || "-")}</td>
           <td>${formatScore(scores.f1)}</td>
-          <td>${formatScore(scores.recall)}</td>
-          <td>${formatScore(scores.precision)}</td>
-          <td>${escapeHtml(report.timestamp || "-")}</td>
+          <td>${formatScore(ocr.f1)}</td>
+          <td>${formatScore(llm.f1)}</td>
           <td>${statusPill(overallStatus(report))}</td>
-          <td>${reportActionButtons(report.name)}</td>
+          <td>${reportActionButtons(reportName(report))}</td>
         </tr>
       `;
     })
@@ -265,40 +455,114 @@ function renderHistory() {
 }
 
 function renderSummary(summary) {
-  els.totalRuns.textContent = summary.total_runs ?? 0;
-  els.averageF1.textContent = formatScore(summary.average_f1);
-  els.averageRecall.textContent = formatScore(summary.average_recall);
-  els.worstField.textContent = summary.worst_field || "-";
+  setText(els.totalRuns, summary.total_runs ?? 0);
+  setText(els.averageF1, formatScore(summary.average_f1));
+  setText(els.averageRecall, formatScore(summary.average_recall));
+  setText(els.worstField, summary.worst_field || "-");
 }
 
 function renderLatest(report) {
   if (!report) {
-    els.latestReportLabel.textContent = "No report selected";
-    els.latestPrecision.textContent = "-";
-    els.latestRecall.textContent = "-";
-    els.latestF1.textContent = "-";
-    els.latestMissing.textContent = "-";
+    setText(els.latestReportLabel, "No report selected");
+    setText(els.latestPrecision, "-");
+    setText(els.latestRecall, "-");
+    setText(els.latestF1, "-");
+    setText(els.latestMissing, "-");
     return;
   }
-  const scores = report.f1_scores || {};
-  els.latestReportLabel.textContent = report.filename || report.name;
-  els.latestPrecision.textContent = formatScore(scores.precision);
-  els.latestRecall.textContent = formatScore(scores.recall);
-  els.latestF1.textContent = formatScore(scores.f1);
-  els.latestMissing.textContent = report.diff_result?.total_missing ?? "-";
+  const scores = combinedScores(report);
+  const diff = ocrEval(report).diff_result || {};
+  setText(els.latestReportLabel, report.filename || reportName(report));
+  setText(els.latestPrecision, formatScore(scores.precision));
+  setText(els.latestRecall, formatScore(scores.recall));
+  setText(els.latestF1, formatScore(scores.f1));
+  setText(els.latestMissing, diff.total_missing ?? report.ocr_eval?.missing_lines ?? "-");
 }
 
 function renderRunResult(report) {
-  const scores = report.f1_scores || {};
-  els.resultSubtitle.textContent = report.report_filename || "Evaluation completed";
-  els.resultStatus.textContent = statusLabel(overallStatus(report));
-  els.resultStatus.className = `status-pill ${statusClass(overallStatus(report))}`;
-  els.resultRunId.textContent = report.run_id || "-";
-  els.resultFilename.textContent = report.filename || "-";
-  els.resultPrecision.textContent = formatScore(scores.precision);
-  els.resultRecall.textContent = formatScore(scores.recall);
-  els.resultF1.textContent = formatScore(scores.f1);
-  els.openLatestReport.disabled = false;
+  const scores = combinedScores(report);
+  const ocr = ocrScores(report);
+  const ocrInfo = ocrEval(report);
+  const llm = llmScores(report);
+  setText(els.resultSubtitle, reportName(report) || "Evaluation completed");
+  setText(els.resultStatus, "COMPLETED");
+  setClassName(els.resultStatus, "status-pill completed");
+  setText(els.resultRunId, report.run_id || "-");
+  setText(els.resultFilename, report.filename || "-");
+  setText(els.resultPrecision, formatScore(scores.precision));
+  setText(els.resultRecall, formatScore(scores.recall));
+  setText(els.resultF1, formatScore(scores.f1));
+  setText(els.resultOcrF1, formatScore(ocr.f1));
+  setText(els.resultOcrPrecision, formatScore(ocr.precision));
+  setText(els.resultOcrRecall, formatScore(ocr.recall));
+  setText(els.resultOcrMissing, ocrInfo.diff_result?.total_missing ?? report.ocr_eval?.missing_lines ?? "-");
+  setText(els.resultOcrFields, ocrInfo.field_count ?? report.ocr_eval?.field_count ?? Object.keys(ocrInfo.fuzz_result || {}).length);
+  setText(els.resultLlmF1, formatScore(llm.f1));
+  setText(els.resultLlmPrecision, formatScore(llm.precision));
+  setText(els.resultLlmRecall, formatScore(llm.recall));
+  setText(els.resultLlmTp, llm.tp ?? "-");
+  setText(els.resultLlmFp, llm.fp ?? "-");
+  setText(els.resultLlmFn, llm.fn ?? "-");
+  setText(els.resultLlmGrey, llm.grey_count ?? "-");
+  if (els.openLatestReport) els.openLatestReport.disabled = false;
+}
+
+function evaluationRequestBody() {
+  return {
+    run_id: els.runId.value.trim(),
+    filename: els.filename.value.trim(),
+  };
+}
+
+function validateEvaluationInputs() {
+  if (!els.runId.value.trim() || !els.filename.value.trim()) {
+    setBanner(els.runMessage, "Enter a DocsAI Run ID and GDS Filename before testing.", "error");
+    return false;
+  }
+  return true;
+}
+
+function showDebugOutput(title, data) {
+  els.debugOutputTitle.textContent = title;
+  els.debugOutputPre.textContent = JSON.stringify(data, null, 2);
+  els.debugOutputPanel.hidden = false;
+}
+
+function goldenUploadFormData(file) {
+  const formData = new FormData();
+  formData.append("file", file);
+  return formData;
+}
+
+function renderGoldenUploadSuccess(result) {
+  els.currentGdsFile.textContent = `${result.filename} (${result.records} records, ${result.total_available_filenames ?? result.available_filenames?.length ?? result.records} total available)`;
+  els.goldenStatus.textContent = "COMPLETED";
+  els.goldenStatus.className = "status-pill completed";
+  const actionText = result.stored_action === "overwritten" ? "Replaced existing GDS file" : "Saved GDS file";
+  setBanner(els.goldenMessage, `${actionText}: ${result.filename}.`, "success");
+  showToast("Golden dataset uploaded");
+}
+
+async function runDebugEvaluation(kind) {
+  if (!validateEvaluationInputs()) return;
+  clearBanner(els.runMessage);
+  const isOcr = kind === "ocr";
+  const button = isOcr ? els.testOcrOnly : els.testLlmOnly;
+  setButtonLoading(button, true, "Testing...");
+  try {
+    const data = isOcr
+      ? await api.runOcrEvaluation(evaluationRequestBody())
+      : await api.runLlmEvaluation(evaluationRequestBody());
+    showDebugOutput(isOcr ? "OCR Eval Debug Output" : "LLM Eval Debug Output", data);
+    rememberCurrentRun(data);
+    renderRunResult(data);
+    renderLatest(data);
+    await Promise.all([loadSummary(), loadReports()]);
+  } catch (error) {
+    setBanner(els.runMessage, error.message, "error");
+  } finally {
+    setButtonLoading(button, false);
+  }
 }
 
 async function loadHealth() {
@@ -338,7 +602,7 @@ async function loadReports() {
   clearBanner(els.historyMessage);
   try {
     const payload = await api.reports();
-    state.reports = payload.reports || [];
+    state.reports = (payload.reports || []).sort((a, b) => reportRunTime(b) - reportRunTime(a));
     state.reports.forEach((report) => state.reportCache.set(report.name, report));
     state.latestReport = state.reports[0] || state.latestReport;
     renderLatest(state.latestReport);
@@ -354,7 +618,10 @@ async function refreshAll() {
 }
 
 async function getReport(name) {
-  if (state.reportCache.has(name)) return state.reportCache.get(name);
+  if (state.reportCache.has(name)) {
+    const cached = state.reportCache.get(name);
+    if (cached?.ocr_eval?.diff_result || cached?.diff_result) return cached;
+  }
   const report = await api.report(name);
   report.name = name;
   state.reportCache.set(name, report);
@@ -362,44 +629,88 @@ async function getReport(name) {
 }
 
 function openReportModal(report) {
-  const scores = report.f1_scores || {};
-  els.modalTitle.textContent = report.name || report.report_filename || "Evaluation Report";
+  const ocr = ocrEval(report);
+  const scores = ocr.f1_scores || {};
+  const combined = combinedScores(report);
+  const llm = llmEval(report);
+
+  els.modalTitle.textContent = reportName(report) || "Evaluation Report";
   els.modalSubtitle.textContent = `${report.filename || "-"} | ${report.timestamp || "-"}`;
   els.modalRunId.textContent = report.run_id || "-";
   els.modalFilename.textContent = report.filename || "-";
-  els.modalPrecision.textContent = formatScore(scores.precision);
-  els.modalRecall.textContent = formatScore(scores.recall);
-  els.modalF1.textContent = formatScore(scores.f1);
-  els.modalUnresolved.textContent = scores.unresolved_count ?? 0;
+  els.combinedModalF1.textContent = formatScore(combined.f1);
+  els.combinedModalPrecision.textContent = formatScore(combined.precision);
+  els.combinedModalRecall.textContent = formatScore(combined.recall);
+  els.ocrModalF1.textContent = formatScore(scores.f1);
+  els.ocrModalPrecision.textContent = formatScore(scores.precision);
+  els.ocrModalRecall.textContent = formatScore(scores.recall);
 
-  const diff = report.diff_result || {};
-  els.missingLines.textContent = (diff.missing_lines || []).join("\n") || "No missing lines";
-  els.addedLines.textContent = (diff.added_lines || []).join("\n") || "No added lines";
+  const diff = ocr.diff_result || {};
+  els.ocrMissingCount.textContent = diff.total_missing ?? 0;
+  els.ocrAddedCount.textContent = diff.total_added ?? 0;
 
-  const fuzz = report.fuzz_result || {};
-  const jiwer = report.jiwer_result || {};
+  const fuzz = ocr.fuzz_result || {};
+  const jiwer = ocr.jiwer_result || {};
   const rows = Object.entries(fuzz).map(([field, result]) => {
     const fieldJiwer = jiwer[field] || {};
-    const metricParts = [];
-    if (typeof result.score === "number") metricParts.push(`Similarity ${formatScore(result.score)}`);
-    if (typeof fieldJiwer.cer === "number") metricParts.push(`CER ${formatScore(fieldJiwer.cer)}`);
-    if (typeof fieldJiwer.wer === "number") metricParts.push(`WER ${formatScore(fieldJiwer.wer)}`);
     return `
-      <tr>
+      <tr class="${statusRowClass(result.status)}">
         <td>${escapeHtml(field)}</td>
-        <td>${statusPill(result.status)}${result.llm_judged ? ' <span class="status-pill ready">LLM</span>' : ""}</td>
-        <td>${escapeHtml(result.golden)}</td>
-        <td>${escapeHtml(result.extracted)}</td>
-        <td>${escapeHtml(metricParts.join(" / ") || "-")}</td>
+        <td>${formatScore(fieldJiwer.cer)}</td>
+        <td>${formatScore(fieldJiwer.wer)}</td>
+        <td>${formatScore(result.score)}</td>
+        <td>${statusPill(result.status)}</td>
       </tr>
     `;
   });
-  els.fieldResultsBody.innerHTML = rows.join("") || '<tr><td colspan="5" class="empty-row">No field results</td></tr>';
+  const ocrEmptyMessage =
+    report.eval_type === "llm"
+      ? "OCR eval was not run for this saved LLM-only report"
+      : "No OCR field results available from this report";
+  els.ocrFieldResultsBody.innerHTML = rows.join("") || `<tr><td colspan="5" class="empty-row">${ocrEmptyMessage}</td></tr>`;
+
+  if (!llm) {
+    els.legacyLlmNote.hidden = false;
+    els.llmModalF1.textContent = "-";
+    els.llmModalPrecision.textContent = "-";
+    els.llmModalRecall.textContent = "-";
+    els.llmTp.textContent = "-";
+    els.llmFp.textContent = "-";
+    els.llmFn.textContent = "-";
+    els.llmGrey.textContent = "-";
+    els.llmFieldResultsBody.innerHTML = '<tr><td colspan="4" class="empty-row">LLM eval was not run for this saved OCR-only or legacy report</td></tr>';
+    els.combinedSection.hidden = true;
+  } else {
+    const llmScores = llm.f1_scores || {};
+    els.legacyLlmNote.hidden = true;
+    els.llmModalF1.textContent = formatScore(llmScores.f1);
+    els.llmModalPrecision.textContent = formatScore(llmScores.precision);
+    els.llmModalRecall.textContent = formatScore(llmScores.recall);
+    els.llmTp.textContent = llmScores.tp ?? 0;
+    els.llmFp.textContent = llmScores.fp ?? 0;
+    els.llmFn.textContent = llmScores.fn ?? 0;
+    els.llmGrey.textContent = llmScores.grey_count ?? 0;
+    els.combinedSection.hidden = false;
+    els.combinedSectionF1.textContent = formatScore(combined.f1);
+    els.combinedSectionPrecision.textContent = formatScore(combined.precision);
+    els.combinedSectionRecall.textContent = formatScore(combined.recall);
+    els.llmFieldResultsBody.innerHTML = Object.entries(llm.field_comparison || {})
+      .map(([field, result]) => `
+        <tr class="${statusRowClass(result.status)}">
+          <td>${escapeHtml(field)}</td>
+          <td>${escapeHtml(result.golden_value)}</td>
+          <td>${escapeHtml(result.extracted_value)}</td>
+          <td>${statusPill(result.status)}</td>
+        </tr>
+      `)
+      .join("") || '<tr><td colspan="4" class="empty-row">No LLM field results available from this report</td></tr>';
+  }
+
   els.reportModal.hidden = false;
 }
 
 function downloadReport(report) {
-  const fileName = report.name || report.report_filename || "docsai_eval_report.json";
+  const fileName = reportName(report) || "docsai_eval_report.json";
   const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -481,18 +792,25 @@ function wireGoldenUpload() {
       setBanner(els.goldenMessage, "Select a JSONL file before uploading.", "error");
       return;
     }
-    const formData = new FormData();
-    formData.append("file", file);
     setButtonLoading(els.uploadGoldenButton, true, "Uploading...");
     els.goldenStatus.textContent = "PARTIAL";
     els.goldenStatus.className = "status-pill partial";
     try {
-      const result = await api.uploadGolden(formData);
-      els.currentGdsFile.textContent = `${result.filename} (${result.records} records)`;
-      els.goldenStatus.textContent = "COMPLETED";
-      els.goldenStatus.className = "status-pill completed";
-      setBanner(els.goldenMessage, `Uploaded ${result.records} valid records.`, "success");
-      showToast("Golden dataset uploaded");
+      let result;
+      try {
+        result = await api.uploadGolden(goldenUploadFormData(file));
+      } catch (error) {
+        const isDuplicate = error.status === 409 && error.detail?.code === "duplicate_gds_filename";
+        if (!isDuplicate) throw error;
+        const shouldOverwrite = window.confirm(
+          `${file.name} already exists in saved golden datasets.\n\nPress OK to replace that saved file.\nPress Cancel to save this upload as a new file.`,
+        );
+        result = await api.uploadGolden(
+          goldenUploadFormData(file),
+          shouldOverwrite ? "overwrite" : "save_new",
+        );
+      }
+      renderGoldenUploadSuccess(result);
     } catch (error) {
       els.goldenStatus.textContent = "FAILED";
       els.goldenStatus.className = "status-pill failed";
@@ -511,18 +829,17 @@ function wireEvaluationForm() {
     els.runStatus.className = "status-pill partial";
     setButtonLoading(els.runButton, true, "Running...");
     try {
-      const report = await api.runEvaluation({
-        run_id: els.runId.value.trim(),
-        filename: els.filename.value.trim(),
+      const report = await api.runFullEvaluation({
+        ...evaluationRequestBody(),
       });
-      state.latestReport = report;
-      state.reportCache.set(report.report_filename || report.name, report);
+      rememberCurrentRun(report);
       renderRunResult(report);
       renderLatest(report);
       els.runStatus.textContent = "COMPLETED";
       els.runStatus.className = "status-pill completed";
       setBanner(els.runMessage, "Evaluation completed successfully.", "success");
       await Promise.all([loadSummary(), loadReports()]);
+      openReportModal(report);
     } catch (error) {
       els.runStatus.textContent = "FAILED";
       els.runStatus.className = "status-pill failed";
@@ -532,15 +849,40 @@ function wireEvaluationForm() {
     }
   });
 
-  els.openLatestReport.addEventListener("click", () => {
-    if (state.latestReport) openReportModal(state.latestReport);
+  els.openLatestReport.addEventListener("click", async () => {
+    if (!state.currentRunReport) return;
+    const name = reportName(state.currentRunReport);
+    const fullReport = name ? await getReport(name).catch(() => state.currentRunReport) : state.currentRunReport;
+    openReportModal(fullReport);
+  });
+  els.testOcrOnly.addEventListener("click", () => runDebugEvaluation("ocr"));
+  els.testLlmOnly.addEventListener("click", () => runDebugEvaluation("llm"));
+  els.closeDebugOutput.addEventListener("click", () => {
+    els.debugOutputPanel.hidden = true;
   });
 }
 
 function wireHistory() {
-  els.historySearch.addEventListener("input", renderHistory);
+  els.historySearch.addEventListener("input", () => {
+    state.historyPage = 1;
+    renderHistory();
+  });
   els.sortF1.addEventListener("click", () => {
-    state.f1SortDirection = state.f1SortDirection === "asc" ? "desc" : "asc";
+    if (!state.sortByF1) {
+      state.sortByF1 = true;
+      state.f1SortDirection = "desc";
+    } else {
+      state.f1SortDirection = state.f1SortDirection === "asc" ? "desc" : "asc";
+    }
+    state.historyPage = 1;
+    renderHistory();
+  });
+  els.historyPrev.addEventListener("click", () => {
+    state.historyPage = Math.max(1, state.historyPage - 1);
+    renderHistory();
+  });
+  els.historyNext.addEventListener("click", () => {
+    state.historyPage += 1;
     renderHistory();
   });
   els.refreshReports.addEventListener("click", async () => {
