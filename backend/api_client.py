@@ -11,33 +11,31 @@ import requests
 from backend.auth import clear_cached_token, get_bearer_token
 from backend.cleaner import clean_ocr_markdown
 from backend.config import get_settings
+from backend.normalizer import normalize_keys_to_camel
 
 
 OCR_STEP_TYPE = "convert_text_from_document_using_mistral_ocr"
 DOCUMENT_TYPE_KEYS = {
-    "tax_invoice": ("taxInvoice", "tax_invoice"),
-    "purchase_order": ("purchaseOrder", "purchase_order"),
-    "proforma_invoice": ("proformaInvoice", "proforma_invoice"),
+    "tax_invoice": ("taxInvoice",),
+    "purchase_order": ("purchaseOrder",),
+    "proforma_invoice": ("proformaInvoice",),
 }
 EXTRACTION_DOCUMENT_KEYS = (
     "taxInvoice",
-    "tax_invoice",
     "purchaseOrder",
-    "purchase_order",
     "proformaInvoice",
-    "proforma_invoice",
 )
-FIELD_KEY_ALIASES = {
-    "clientId": ("clientId", "client_id"),
-    "billTo": ("billTo", "bill_to"),
-    "deliveryTo": ("deliveryTo", "delivery_to"),
-    "invoiceNo": ("invoiceNo", "invoice_no"),
-    "date": ("date",),
-    "poNo": ("poNo", "po_no"),
-    "terms": ("terms",),
-    "sales": ("sales",),
-    "rqNo": ("rqNo", "rq_no"),
-}
+LLM_EVAL_FIELD_KEYS = (
+    "clientId",
+    "billTo",
+    "deliveryTo",
+    "invoiceNo",
+    "date",
+    "poNo",
+    "terms",
+    "sales",
+    "rqNo",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,23 +91,15 @@ def _normalize_document_type(document_type: str) -> str:
 
 def _document_values_from_mapping(value: Any) -> dict[str, Any]:
     """Return a mapping that may directly contain document extraction keys."""
-    mapping = _coerce_mapping(value)
-    extracted_data = _coerce_mapping(mapping.get("extracted_data"))
-    return extracted_data if extracted_data else mapping
+    mapping = normalize_keys_to_camel(_coerce_mapping(value))
+    extracted_data = _coerce_mapping(mapping.get("extractedData"))
+    return normalize_keys_to_camel(extracted_data) if extracted_data else mapping
 
 
 def _contains_extraction_document_key(value: Any) -> bool:
     """Return True when a value contains any supported document extraction key."""
     mapping = _document_values_from_mapping(value)
     return any(key in mapping for key in EXTRACTION_DOCUMENT_KEYS)
-
-
-def _first_non_empty_value(record: dict[str, Any], aliases: tuple[str, ...]) -> Any:
-    """Return the first available value for a set of camelCase/snake_case aliases."""
-    for alias in aliases:
-        if alias in record and record[alias] is not None:
-            return record[alias]
-    return ""
 
 
 def _stringify_field_value(value: Any) -> str:
@@ -128,7 +118,7 @@ def extract_ocr_fields(llm_output: Any, document_type: str) -> dict[str, Any]:
         return {}
 
     extracted_data = _document_values_from_mapping(llm_output)
-    document_keys = DOCUMENT_TYPE_KEYS.get(_normalize_document_type(document_type), ())
+    document_keys = DOCUMENT_TYPE_KEYS.get(_normalize_document_type(document_type), ("taxInvoice",))
     invoices = None
     for document_key in document_keys:
         invoices = extracted_data.get(document_key)
@@ -153,9 +143,32 @@ def extract_ocr_fields(llm_output: Any, document_type: str) -> dict[str, Any]:
         return {}
 
     return {
-        output_key: _stringify_field_value(_first_non_empty_value(first_invoice, aliases))
-        for output_key, aliases in FIELD_KEY_ALIASES.items()
+        key: _stringify_field_value(first_invoice.get(key, ""))
+        for key in LLM_EVAL_FIELD_KEYS
     }
+
+
+def extract_llm_line_items(llm_output: Any, document_type: str) -> list[dict[str, Any]]:
+    """Extract line items from the first DocsAI LLM document record."""
+    if llm_output is None:
+        return []
+
+    extracted_data = _document_values_from_mapping(llm_output)
+    document_keys = DOCUMENT_TYPE_KEYS.get(_normalize_document_type(document_type), ("taxInvoice",))
+    invoices = None
+    for document_key in document_keys:
+        invoices = extracted_data.get(document_key)
+        if invoices is not None:
+            break
+
+    if not isinstance(invoices, list) or not invoices or not isinstance(invoices[0], dict):
+        return []
+
+    # TODO: line items comparison next version.
+    line_items = invoices[0].get("lineItems")
+    if not isinstance(line_items, list):
+        return []
+    return [item for item in line_items if isinstance(item, dict)]
 
 
 def _find_ocr_step(steps: list[Any], run_id: str) -> dict[str, Any]:
@@ -185,6 +198,17 @@ def _extract_markdown_from_step(step: dict[str, Any], run_id: str) -> str:
 
 def _find_llm_output(steps: list[Any]) -> Any:
     """Find the first LLM extraction output that contains a supported document key."""
+    for step in steps:
+        if not isinstance(step, dict) or step.get("stepType") != "call_llm":
+            continue
+        step_id = str(step.get("stepId", ""))
+        if "extract-fields" not in step_id:
+            continue
+        output_data = _get_output_data(step)
+        llm_response = output_data.get("llm_response")
+        if _contains_extraction_document_key(llm_response):
+            return llm_response
+
     for step in steps:
         if not isinstance(step, dict) or step.get("stepType") != "call_llm":
             continue

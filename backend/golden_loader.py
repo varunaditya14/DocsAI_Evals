@@ -8,13 +8,14 @@ import os
 from typing import Any
 
 from backend.cleaner import clean_ocr_markdown
+from backend.normalizer import normalize_keys_to_camel
 
 
 logger = logging.getLogger(__name__)
 DOCUMENT_TYPE_KEYS = {
-    "tax_invoice": ("taxInvoice", "tax_invoice"),
-    "purchase_order": ("purchaseOrder", "purchase_order"),
-    "proforma_invoice": ("proformaInvoice", "proforma_invoice"),
+    "tax_invoice": ("taxInvoice",),
+    "purchase_order": ("purchaseOrder",),
+    "proforma_invoice": ("proformaInvoice",),
 }
 SUPPORTED_DOCUMENT_KEYS = {
     key for keys in DOCUMENT_TYPE_KEYS.values() for key in keys
@@ -30,6 +31,17 @@ TAX_INVOICE_FIELD_TYPES = {
     "sales": "text",
     "rqNo": "text",
 }
+EVAL_FIELD_KEYS = (
+    "clientId",
+    "billTo",
+    "deliveryTo",
+    "invoiceNo",
+    "date",
+    "poNo",
+    "terms",
+    "sales",
+    "rqNo",
+)
 
 
 def _normalize_document_type(document_type: str) -> str:
@@ -56,78 +68,43 @@ def get_gds_path() -> str:
     return gds_path
 
 
-def infer_document_type(record: dict[str, Any]) -> str:
-    """Infer a document type from the first supported document key in a record.
-
-    Checks top-level keys first (flat record format), then falls back to
-    looking inside ``jsonOutput`` / ``json_output`` (nested record format).
-    """
-    # Flat record format: document keys sit directly on the record
-    for normalized_type, keys in DOCUMENT_TYPE_KEYS.items():
-        if any(key in record for key in keys):
-            return normalized_type
-
-    # Nested record format: document keys live inside jsonOutput / json_output
-    json_output = record.get("jsonOutput") or record.get("json_output")
-    if isinstance(json_output, dict):
-        for normalized_type, keys in DOCUMENT_TYPE_KEYS.items():
-            for key in keys:
-                value = json_output.get(key)
-                if isinstance(value, list) and value:
-                    return normalized_type
-
-    return ""
+def get_gds_storage_dir() -> str:
+    """Return the directory where uploaded golden dataset files are retained."""
+    gds_path = os.path.abspath(get_gds_path())
+    if os.path.isdir(gds_path):
+        return gds_path
+    parent_dir = os.path.dirname(gds_path) or os.getcwd()
+    return os.path.join(parent_dir, "golden_datasets")
 
 
-def _first_document_record(record: dict[str, Any], document_type: str) -> dict[str, Any]:
-    """Return the first document object from a GDS record for a document type.
+def _golden_file_paths() -> list[str]:
+    """Return configured and uploaded golden dataset paths newest-first."""
+    gds_path = os.path.abspath(get_gds_path())
+    storage_dir = os.path.abspath(get_gds_storage_dir())
+    paths: list[str] = []
 
-    Searches top-level keys first (flat record format), then falls back to
-    looking inside ``jsonOutput`` / ``json_output`` (nested record format).
-    """
-    document_keys = _document_keys_for(document_type)
-    if not document_keys:
-        inferred_type = infer_document_type(record)
-        document_keys = _document_keys_for(inferred_type)
+    if os.path.isdir(storage_dir):
+        uploaded_paths = [
+            os.path.join(storage_dir, name)
+            for name in os.listdir(storage_dir)
+            if name.lower().endswith((".json", ".jsonl"))
+        ]
+        uploaded_paths.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+        paths.extend(uploaded_paths)
 
-    # Flat record format: document arrays sit directly on the record
-    for document_key in document_keys:
-        value = record.get(document_key)
-        if isinstance(value, list) and value:
-            first_item = value[0]
-            return first_item if isinstance(first_item, dict) else {}
-        if isinstance(value, dict):
-            return value
+    if os.path.isfile(gds_path) and gds_path not in paths:
+        paths.append(gds_path)
 
-    # Nested record format: document arrays live inside jsonOutput / json_output
-    json_output = record.get("jsonOutput") or record.get("json_output")
-    if isinstance(json_output, dict):
-        for document_key in document_keys:
-            value = json_output.get(document_key)
-            if isinstance(value, list) and value:
-                first_item = value[0]
-                return first_item if isinstance(first_item, dict) else {}
-            if isinstance(value, dict):
-                return value
-
-    logger.warning("No GDS expected fields found for document type: %s", document_type)
-    return {}
+    return paths
 
 
-def _available_filenames(records: list[dict[str, Any]]) -> list[str]:
-    """Return available filenames from loaded GDS records."""
-    return [str(record.get("filename", "")) for record in records if record.get("filename")]
-
-
-def load_all_golden() -> list[dict[str, Any]]:
-    """Load all golden dataset records from the configured golden dataset file."""
-    gds_path = get_gds_path()
-
+def _load_golden_file(path: str) -> list[dict[str, Any]]:
+    """Load records from a single golden dataset JSON or JSONL file."""
     try:
-        with open(gds_path, "r", encoding="utf-8-sig") as handle:
+        with open(path, "r", encoding="utf-8-sig") as handle:
             raw_text = handle.read()
     except OSError as exc:
-        raise RuntimeError(f"Unable to read golden dataset file: {gds_path}") from exc
+        raise RuntimeError(f"Unable to read golden dataset file: {path}") from exc
 
     if not raw_text.strip():
         return []
@@ -144,11 +121,11 @@ def load_all_golden() -> list[dict[str, Any]]:
                 record = json.loads(stripped)
             except json.JSONDecodeError as exc:
                 raise RuntimeError(
-                    f"Invalid JSON in golden dataset at line {line_number}."
+                    f"Invalid JSON in golden dataset {path} at line {line_number}."
                 ) from exc
             if not isinstance(record, dict):
                 raise RuntimeError(
-                    f"Golden dataset line {line_number} must be a JSON object."
+                    f"Golden dataset {path} line {line_number} must be a JSON object."
                 )
             records.append(record)
         return records
@@ -157,17 +134,93 @@ def load_all_golden() -> list[dict[str, Any]]:
         data = [data]
     if not isinstance(data, list):
         raise RuntimeError(
-            f"Golden dataset file must contain a JSON array of records: {gds_path}"
+            f"Golden dataset file must contain a JSON array of records: {path}"
         )
 
     records = []
     for index, record in enumerate(data):
         if not isinstance(record, dict):
             raise RuntimeError(
-                f"Golden dataset entry at index {index} must be a JSON object."
+                f"Golden dataset {path} entry at index {index} must be a JSON object."
             )
         records.append(record)
+    return records
 
+
+def infer_document_type(record: dict[str, Any]) -> str:
+    """Infer a document type from the first supported document key in a record.
+
+    Checks the configured ``jsonOutput`` object for the first supported
+    camelCase document array.
+    """
+    normalized_record = normalize_keys_to_camel(record)
+    json_output = normalized_record.get("jsonOutput")
+    if isinstance(json_output, dict):
+        for normalized_type, keys in DOCUMENT_TYPE_KEYS.items():
+            for key in keys:
+                value = json_output.get(key)
+                if isinstance(value, list) and value:
+                    return normalized_type
+
+    return ""
+
+
+def _first_document_record(record: dict[str, Any], document_type: str) -> dict[str, Any]:
+    """Return the first document object from a GDS record for a document type.
+
+    Reads the configured camelCase ``jsonOutput`` object and returns the first
+    document entry for the requested document type.
+    """
+    normalized_record = normalize_keys_to_camel(record)
+    document_keys = _document_keys_for(document_type)
+    if not document_keys:
+        inferred_type = infer_document_type(normalized_record)
+        document_keys = _document_keys_for(inferred_type)
+
+    json_output = normalized_record.get("jsonOutput")
+    if isinstance(json_output, dict):
+        for document_key in document_keys:
+            value = json_output.get(document_key)
+            if isinstance(value, list) and value:
+                first_item = value[0]
+                return first_item if isinstance(first_item, dict) else {}
+            if isinstance(value, dict):
+                return value
+
+    logger.warning("No GDS expected fields found for document type: %s", document_type)
+    return {}
+
+
+def _available_filenames(records: list[dict[str, Any]]) -> list[str]:
+    """Return available filenames from loaded GDS records."""
+    filenames: list[str] = []
+    seen: set[str] = set()
+    for record in records:
+        filename = str(record.get("filename", "")).strip()
+        normalized_filename = filename.lower()
+        if not filename or normalized_filename in seen:
+            continue
+        filenames.append(filename)
+        seen.add(normalized_filename)
+    return filenames
+
+
+def load_all_golden() -> list[dict[str, Any]]:
+    """Load all golden records from every retained golden dataset file."""
+    paths = _golden_file_paths()
+    if not paths:
+        return []
+
+    records: list[dict[str, Any]] = []
+    for path in paths:
+        try:
+            file_records = _load_golden_file(path)
+        except RuntimeError as exc:
+            logger.warning("Skipping golden dataset file %s: %s", path, exc)
+            continue
+        for record in file_records:
+            record["_gds_source_file"] = path
+            records.append(record)
     return records
 
 
@@ -204,32 +257,36 @@ def get_available_filenames() -> list[str]:
 
 def get_reference_markdown(record: dict[str, Any]) -> str:
     """Return cleaned golden markdown from a GDS record."""
-    markdown = (
-        record.get("ocr_markdown")
-        or record.get("ocrMarkdown")
-        or record.get("reference_markdown")
-        or record.get("referenceMarkdown")
-        or ""
-    )
+    normalized_record = normalize_keys_to_camel(record)
+    markdown = normalized_record.get("ocrMarkdown", "")
     return clean_ocr_markdown(str(markdown) if markdown is not None else "")
 
 
 def get_expected_fields_from_record(record: dict[str, Any], document_type: str) -> dict[str, Any]:
-    """Return expected fields for a document type with None values normalized."""
-    document_record = _first_document_record(record, document_type)
+    """Return top-level expected GDS fields for a document type."""
+    document_record = normalize_keys_to_camel(_first_document_record(record, document_type))
     if not document_record:
+        logger.warning("No GDS expected fields found for document type: %s", document_type)
         return {}
-    return {key: ("" if value is None else value) for key, value in document_record.items()}
+    return {
+        key: ("" if document_record.get(key) is None else document_record.get(key, ""))
+        for key in EVAL_FIELD_KEYS
+    }
 
 
 def get_field_types_from_record(record: dict[str, Any], document_type: str) -> dict[str, str]:
     """Return camelCase field type mapping for the document type."""
-    if _normalize_document_type(document_type) == "tax_invoice":
-        return TAX_INVOICE_FIELD_TYPES.copy()
-    expected_fields = get_expected_fields_from_record(record, document_type)
-    if expected_fields:
-        return {field: "text" for field in expected_fields}
-    return {}
+    return TAX_INVOICE_FIELD_TYPES.copy()
+
+
+def get_expected_line_items(record: dict[str, Any], document_type: str) -> list[dict[str, Any]]:
+    """Return expected line items from the first GDS document record."""
+    document_record = normalize_keys_to_camel(_first_document_record(record, document_type))
+    line_items = document_record.get("lineItems") if document_record else None
+    # TODO: line items eval not implemented yet.
+    if not isinstance(line_items, list):
+        return []
+    return [item for item in line_items if isinstance(item, dict)]
 
 
 def startup_check() -> None:
