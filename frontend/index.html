@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DocsAI Evals Portal</title>
-    <link rel="stylesheet" href="/assets/styles.css?v=20260630-markdown-ocr" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260630-llm-field-tabs" />
   </head>
   <body>
     <header class="topbar">
@@ -379,9 +379,9 @@
           <section id="summaryTabPanel" class="report-tab-panel active" data-report-panel="summary">
             <div id="comparisonGrid" class="comparison-grid"></div>
             <p id="summaryLlmNote" class="legacy-note" hidden>LLM eval not available for this report</p>
-            <section class="attention-section">
-              <h3>Fields that need attention</h3>
-              <div id="attentionList" class="attention-list"></div>
+            <section class="insights-section">
+              <h3>What this run tells you</h3>
+              <div id="insightList" class="insight-list"></div>
             </section>
             <div class="summary-actions">
               <button id="downloadSummaryReport" class="secondary-button" type="button">
@@ -401,10 +401,9 @@
               <div><span>Text accuracy score</span><strong id="ocrModalPrecision">-</strong></div>
               <div><span>Similarity score</span><strong id="ocrModalRecall">-</strong></div>
               <div><span>Composite score</span><strong id="ocrCompositeScore">-</strong></div>
-              <div><span>Missing Lines</span><strong id="ocrMissingCount">-</strong></div>
-              <div><span>Added Lines</span><strong id="ocrAddedCount">-</strong></div>
             </div>
-            <details class="markdown-diff-panel">
+            <div id="ocrStructuralStatus" class="structural-status-banner"></div>
+            <details id="ocrMarkdownDiffPanel" class="markdown-diff-panel">
               <summary>Markdown differences</summary>
               <div class="diff-grid">
                 <div>
@@ -419,6 +418,7 @@
             </details>
             <div class="line-accuracy-section">
               <h3>Line-level accuracy</h3>
+              <div id="ocrLineFilters" class="line-filter-row"></div>
               <div id="ocrFieldResultsBody" class="line-accuracy-list"></div>
             </div>
           </section>
@@ -434,6 +434,7 @@
               <div><span>FN</span><strong id="llmFn">-</strong></div>
               <div><span>GREY</span><strong id="llmGrey">-</strong></div>
             </div>
+            <div id="llmFieldFilters" class="field-filter-row"></div>
             <div class="table-wrap modal-table">
               <table>
                 <thead>
@@ -452,6 +453,6 @@
       </section>
     </div>
 
-    <script src="/assets/app.js?v=20260630-markdown-ocr"></script>
+    <script src="/assets/app.js?v=20260630-llm-field-tabs"></script>
   </body>
 </html>
