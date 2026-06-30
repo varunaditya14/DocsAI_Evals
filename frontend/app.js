@@ -7,6 +7,7 @@ const state = {
   historyPageSize: 5,
   latestReport: null,
   currentRunReport: null,
+  activeModalReport: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -114,10 +115,13 @@ const els = {
   llmFn: $("#llmFn"),
   llmGrey: $("#llmGrey"),
   llmFieldResultsBody: $("#llmFieldResultsBody"),
-  combinedSection: $("#combinedSection"),
-  combinedSectionF1: $("#combinedSectionF1"),
-  combinedSectionPrecision: $("#combinedSectionPrecision"),
-  combinedSectionRecall: $("#combinedSectionRecall"),
+  reportTabs: $$(".modal-tab"),
+  reportPanels: $$(".report-tab-panel"),
+  comparisonGrid: $("#comparisonGrid"),
+  summaryLlmNote: $("#summaryLlmNote"),
+  attentionList: $("#attentionList"),
+  downloadSummaryReport: $("#downloadSummaryReport"),
+  viewBreakdownButton: $("#viewBreakdownButton"),
 };
 
 const api = {
@@ -342,6 +346,162 @@ function combinedScores(report) {
 
 function statusRowClass(status) {
   return `status-row ${statusClass(status)}`;
+}
+
+function isProblemStatus(status) {
+  return ["FP", "FN"].includes(String(status || "").toUpperCase());
+}
+
+function isGreyStatus(status) {
+  return String(status || "").toUpperCase() === "GREY";
+}
+
+function setReportTab(tabName) {
+  els.reportTabs.forEach((tab) => {
+    tab.classList.toggle("active", tab.dataset.reportTab === tabName);
+  });
+  els.reportPanels.forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.reportPanel === tabName);
+  });
+}
+
+function comparisonRow(label, value) {
+  return `<div class="comparison-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+}
+
+function renderComparisonCard(kind, scoreData, detailRows) {
+  const iconClass = kind === "ocr" ? "ti ti-scan" : "ti ti-braces";
+  const label = kind === "ocr" ? "OCR eval" : "LLM eval";
+  return `
+    <article class="comparison-card">
+      <div class="comparison-card-title">
+        <span class="${iconClass}" aria-hidden="true"></span>
+        <strong>${label}</strong>
+      </div>
+      <div class="comparison-score">
+        <strong>${formatScore(scoreData.f1)}</strong>
+        <span>F1 score</span>
+      </div>
+      <div class="comparison-divider"></div>
+      ${comparisonRow("Precision", formatScore(scoreData.precision))}
+      ${comparisonRow("Recall", formatScore(scoreData.recall))}
+      <div class="comparison-divider"></div>
+      ${detailRows.join("")}
+    </article>
+  `;
+}
+
+function buildAttentionList(report) {
+  const ocr = ocrEval(report);
+  const llm = llmEval(report);
+  const fuzz = ocr.fuzz_result || {};
+  const jiwer = ocr.jiwer_result || {};
+  const llmComparison = llm?.field_comparison || {};
+  const fields = new Set([...Object.keys(fuzz), ...Object.keys(llmComparison)]);
+
+  return [...fields]
+    .map((field) => {
+      const ocrResult = fuzz[field];
+      const llmResult = llmComparison[field];
+      const ocrStatus = ocrResult?.status;
+      const llmStatus = llmResult?.status;
+      const ocrProblem = isProblemStatus(ocrStatus);
+      const llmProblem = isProblemStatus(llmStatus);
+      const hasGrey = isGreyStatus(ocrStatus) || isGreyStatus(llmStatus);
+
+      if (!llm && !ocrProblem && !hasGrey) return null;
+      if (ocrStatus === "TP" && llmStatus === "TP") return null;
+      if (!ocrProblem && !llmProblem && !hasGrey && ocrStatus && llmStatus) return null;
+
+      let tag = "";
+      if (ocrProblem && llmProblem) tag = "OCR + LLM";
+      else if (ocrProblem) tag = "OCR only";
+      else if (llmProblem) tag = "LLM only";
+      else tag = "Review";
+      if (hasGrey) tag = `${tag}, GREY`;
+
+      const missingIn = [];
+      if (!ocrResult) missingIn.push("OCR eval");
+      if (!llmResult && llm) missingIn.push("LLM eval");
+
+      let reason = "";
+      if (missingIn.length) {
+        reason = `Missing in ${missingIn.join(" and ")}`;
+      } else if (hasGrey) {
+        reason = "Formatting differs, content matches - needs manual review";
+      } else if (ocrProblem && jiwer[field]) {
+        reason = "Character mismatch";
+      } else if (llmProblem) {
+        reason = "Value mismatch";
+      } else {
+        reason = "Needs review";
+      }
+
+      let severity = "single";
+      if (ocrProblem && llmProblem) severity = "both";
+      if (hasGrey && !ocrProblem && !llmProblem) severity = "grey";
+      else if (hasGrey) severity = "mixed-grey";
+
+      return { field, tag, reason, severity };
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      const order = { both: 0, "mixed-grey": 1, single: 2, grey: 3 };
+      return (order[a.severity] ?? 4) - (order[b.severity] ?? 4);
+    });
+}
+
+function renderSummaryTab(report) {
+  const ocr = ocrEval(report);
+  const llm = llmEval(report);
+  const ocrScore = ocr.f1_scores || {};
+  const ocrResults = Object.values(ocr.fuzz_result || {});
+  const ocrTp = ocrResults.filter((result) => result?.status === "TP").length;
+  const ocrTotal = ocrResults.length;
+  const missingLines = ocr.diff_result?.total_missing ?? 0;
+
+  const cards = [
+    renderComparisonCard("ocr", ocrScore, [
+      comparisonRow("Missing lines", String(missingLines)),
+      comparisonRow("Fields passed", `${ocrTp} / ${ocrTotal}`),
+    ]),
+  ];
+
+  if (llm) {
+    const llmScore = llm.f1_scores || {};
+    const issues = Number(llmScore.fp || 0) + Number(llmScore.fn || 0);
+    cards.push(
+      renderComparisonCard("llm", llmScore, [
+        comparisonRow("True positive", String(llmScore.tp ?? 0)),
+        comparisonRow("Issues / Uncertain", `${issues} / ${llmScore.grey_count ?? 0}`),
+      ]),
+    );
+  }
+
+  els.comparisonGrid.classList.toggle("single-card", !llm);
+  els.comparisonGrid.innerHTML = cards.join("");
+  els.summaryLlmNote.hidden = Boolean(llm);
+
+  const attentionItems = buildAttentionList(report);
+  if (!attentionItems.length) {
+    els.attentionList.innerHTML = `
+      <div class="empty-success-state">
+        <span class="ti ti-circle-check" aria-hidden="true"></span>
+        <strong>All fields passed in both evals</strong>
+      </div>
+    `;
+    return;
+  }
+
+  els.attentionList.innerHTML = attentionItems
+    .map((item) => `
+      <div class="attention-row ${item.severity}">
+        <span class="attention-tag ${item.severity}">${escapeHtml(item.tag)}</span>
+        <strong class="attention-field">${escapeHtml(item.field)}</strong>
+        <span class="attention-reason">${escapeHtml(item.reason)}</span>
+      </div>
+    `)
+    .join("");
 }
 
 function overallStatus(report) {
@@ -629,6 +789,7 @@ async function getReport(name) {
 }
 
 function openReportModal(report) {
+  state.activeModalReport = report;
   const ocr = ocrEval(report);
   const scores = ocr.f1_scores || {};
   const combined = combinedScores(report);
@@ -644,6 +805,7 @@ function openReportModal(report) {
   els.ocrModalF1.textContent = formatScore(scores.f1);
   els.ocrModalPrecision.textContent = formatScore(scores.precision);
   els.ocrModalRecall.textContent = formatScore(scores.recall);
+  renderSummaryTab(report);
 
   const diff = ocr.diff_result || {};
   els.ocrMissingCount.textContent = diff.total_missing ?? 0;
@@ -679,7 +841,6 @@ function openReportModal(report) {
     els.llmFn.textContent = "-";
     els.llmGrey.textContent = "-";
     els.llmFieldResultsBody.innerHTML = '<tr><td colspan="4" class="empty-row">LLM eval was not run for this saved OCR-only or legacy report</td></tr>';
-    els.combinedSection.hidden = true;
   } else {
     const llmScores = llm.f1_scores || {};
     els.legacyLlmNote.hidden = true;
@@ -690,10 +851,6 @@ function openReportModal(report) {
     els.llmFp.textContent = llmScores.fp ?? 0;
     els.llmFn.textContent = llmScores.fn ?? 0;
     els.llmGrey.textContent = llmScores.grey_count ?? 0;
-    els.combinedSection.hidden = false;
-    els.combinedSectionF1.textContent = formatScore(combined.f1);
-    els.combinedSectionPrecision.textContent = formatScore(combined.precision);
-    els.combinedSectionRecall.textContent = formatScore(combined.recall);
     els.llmFieldResultsBody.innerHTML = Object.entries(llm.field_comparison || {})
       .map(([field, result]) => `
         <tr class="${statusRowClass(result.status)}">
@@ -706,6 +863,7 @@ function openReportModal(report) {
       .join("") || '<tr><td colspan="4" class="empty-row">No LLM field results available from this report</td></tr>';
   }
 
+  setReportTab("summary");
   els.reportModal.hidden = false;
 }
 
@@ -895,6 +1053,13 @@ function wireHistory() {
 }
 
 function wireModalAndHealth() {
+  els.reportTabs.forEach((tab) => {
+    tab.addEventListener("click", () => setReportTab(tab.dataset.reportTab));
+  });
+  els.downloadSummaryReport.addEventListener("click", () => {
+    if (state.activeModalReport) downloadReport(state.activeModalReport);
+  });
+  els.viewBreakdownButton.addEventListener("click", () => setReportTab("ocr"));
   els.closeModal.addEventListener("click", () => {
     els.reportModal.hidden = true;
   });

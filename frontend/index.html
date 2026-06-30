@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DocsAI Evals Portal</title>
-    <link rel="stylesheet" href="/assets/styles.css?v=20260629-gds-duplicates" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260630-docsai-layout" />
   </head>
   <body>
     <header class="topbar">
@@ -370,8 +370,31 @@
           <div><span>Evals Report Precision</span><strong id="combinedModalPrecision">-</strong></div>
           <div><span>Evals Report Recall</span><strong id="combinedModalRecall">-</strong></div>
         </div>
+        <nav class="modal-tabs" aria-label="Report sections">
+          <button class="modal-tab active" type="button" data-report-tab="summary">Summary</button>
+          <button class="modal-tab" type="button" data-report-tab="ocr">OCR eval</button>
+          <button class="modal-tab" type="button" data-report-tab="llm">LLM eval</button>
+        </nav>
         <div class="modal-content">
-          <section class="preview-panel eval-section">
+          <section id="summaryTabPanel" class="report-tab-panel active" data-report-panel="summary">
+            <div id="comparisonGrid" class="comparison-grid"></div>
+            <p id="summaryLlmNote" class="legacy-note" hidden>LLM eval not available for this report</p>
+            <section class="attention-section">
+              <h3>Fields that need attention</h3>
+              <div id="attentionList" class="attention-list"></div>
+            </section>
+            <div class="summary-actions">
+              <button id="downloadSummaryReport" class="secondary-button" type="button">
+                <span class="ti ti-download" aria-hidden="true"></span>
+                Download report
+              </button>
+              <button id="viewBreakdownButton" class="secondary-button" type="button">
+                <span class="ti ti-external-link" aria-hidden="true"></span>
+                View full breakdown
+              </button>
+            </div>
+          </section>
+          <section id="ocrTabPanel" class="preview-panel eval-section report-tab-panel" data-report-panel="ocr">
             <h3>OCR Evaluation</h3>
             <div class="eval-stat-grid">
               <div><span>F1</span><strong id="ocrModalF1">-</strong></div>
@@ -395,7 +418,7 @@
               </table>
             </div>
           </section>
-          <section id="llmSection" class="preview-panel eval-section">
+          <section id="llmSection" class="preview-panel eval-section report-tab-panel" data-report-panel="llm">
             <h3>LLM Evaluation</h3>
             <p id="legacyLlmNote" class="legacy-note" hidden>LLM eval not available for this report</p>
             <div class="eval-stat-grid">
@@ -421,18 +444,10 @@
               </table>
             </div>
           </section>
-          <section id="combinedSection" class="preview-panel eval-section combined-panel">
-            <h3>Evals Report</h3>
-            <div class="eval-stat-grid combined-stats">
-              <div><span>F1</span><strong id="combinedSectionF1" class="combined-f1">-</strong></div>
-              <div><span>Precision</span><strong id="combinedSectionPrecision">-</strong></div>
-              <div><span>Recall</span><strong id="combinedSectionRecall">-</strong></div>
-            </div>
-          </section>
         </div>
       </section>
     </div>
 
-    <script src="/assets/app.js?v=20260629-gds-duplicates"></script>
+    <script src="/assets/app.js?v=20260630-docsai-layout"></script>
   </body>
 </html>
