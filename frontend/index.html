@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DocsAI Evals Portal</title>
-    <link rel="stylesheet" href="/assets/styles.css?v=20260630-docsai-layout" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260630-markdown-ocr" />
   </head>
   <body>
     <header class="topbar">
@@ -230,7 +230,7 @@
               </div>
               <div class="run-counts-grid">
                 <div><span>OCR Missing Lines</span><strong id="resultOcrMissing">-</strong></div>
-                <div><span>OCR Fields</span><strong id="resultOcrFields">-</strong></div>
+                <div><span>OCR Lines</span><strong id="resultOcrFields">-</strong></div>
                 <div><span>LLM TP</span><strong id="resultLlmTp">-</strong></div>
                 <div><span>LLM FP</span><strong id="resultLlmFp">-</strong></div>
                 <div><span>LLM FN</span><strong id="resultLlmFn">-</strong></div>
@@ -397,25 +397,29 @@
           <section id="ocrTabPanel" class="preview-panel eval-section report-tab-panel" data-report-panel="ocr">
             <h3>OCR Evaluation</h3>
             <div class="eval-stat-grid">
-              <div><span>F1</span><strong id="ocrModalF1">-</strong></div>
-              <div><span>Precision</span><strong id="ocrModalPrecision">-</strong></div>
-              <div><span>Recall</span><strong id="ocrModalRecall">-</strong></div>
+              <div><span>Structural score</span><strong id="ocrModalF1">-</strong></div>
+              <div><span>Text accuracy score</span><strong id="ocrModalPrecision">-</strong></div>
+              <div><span>Similarity score</span><strong id="ocrModalRecall">-</strong></div>
+              <div><span>Composite score</span><strong id="ocrCompositeScore">-</strong></div>
               <div><span>Missing Lines</span><strong id="ocrMissingCount">-</strong></div>
               <div><span>Added Lines</span><strong id="ocrAddedCount">-</strong></div>
             </div>
-            <div class="table-wrap modal-table">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Field</th>
-                    <th>CER</th>
-                    <th>WER</th>
-                    <th>Fuzzy Score</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody id="ocrFieldResultsBody"></tbody>
-              </table>
+            <details class="markdown-diff-panel">
+              <summary>Markdown differences</summary>
+              <div class="diff-grid">
+                <div>
+                  <h3>Missing lines</h3>
+                  <pre id="ocrMissingLines">No missing lines</pre>
+                </div>
+                <div>
+                  <h3>Added lines</h3>
+                  <pre id="ocrAddedLines">No added lines</pre>
+                </div>
+              </div>
+            </details>
+            <div class="line-accuracy-section">
+              <h3>Line-level accuracy</h3>
+              <div id="ocrFieldResultsBody" class="line-accuracy-list"></div>
             </div>
           </section>
           <section id="llmSection" class="preview-panel eval-section report-tab-panel" data-report-panel="llm">
@@ -448,6 +452,6 @@
       </section>
     </div>
 
-    <script src="/assets/app.js?v=20260630-docsai-layout"></script>
+    <script src="/assets/app.js?v=20260630-markdown-ocr"></script>
   </body>
 </html>

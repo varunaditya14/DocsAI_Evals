@@ -29,7 +29,7 @@ def save_report(
     diff_result: dict[str, Any] | None = None,
     jiwer_result: dict[str, Any] | None = None,
     fuzz_result: dict[str, Any] | None = None,
-    ocr_f1: dict[str, Any] | None = None,
+    ocr_score: dict[str, Any] | None = None,
     llm_comparison_result: dict[str, Any] | None = None,
     llm_f1: dict[str, Any] | None = None,
     combined_scores: dict[str, Any] | None = None,
@@ -53,7 +53,7 @@ def save_report(
             f"{run_id}_{timestamp}_{collision_count}_{report_suffix}.json",
         )
         collision_count += 1
-    overall_scores = evals_report or combined_scores or ocr_f1 or llm_f1 or {}
+    overall_scores = evals_report or combined_scores or ocr_score or llm_f1 or {}
     payload = {
         "run_id": run_id,
         "filename": filename,
@@ -65,7 +65,7 @@ def save_report(
             "diff_result": diff_result or {},
             "jiwer_result": jiwer_result or {},
             "fuzz_result": fuzz_result or {},
-            "f1_scores": ocr_f1 or {},
+            "ocr_score": ocr_score or {},
         },
         "llm_eval": {
             "field_comparison": llm_comparison_result or {},

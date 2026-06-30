@@ -1179,6 +1179,89 @@ dd {
   border-left-color: var(--text-muted);
 }
 
+.markdown-diff-panel {
+  margin-bottom: 14px;
+}
+
+.markdown-diff-panel summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  color: var(--text-main);
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-weight: 900;
+}
+
+.line-accuracy-section {
+  margin-top: 12px;
+}
+
+.line-accuracy-list {
+  display: grid;
+  gap: 10px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.line-accuracy-row {
+  padding: 12px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--primary);
+  border-radius: 12px;
+}
+
+.line-accuracy-row header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.line-accuracy-row header span {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.line-accuracy-lines {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.line-label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.line-text {
+  min-height: 74px;
+  margin: 0;
+  padding: 10px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  color: #334155;
+  background: #f9fafb;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.metric-badge {
+  padding: 4px 7px;
+  color: var(--primary);
+  background: var(--primary-soft);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
 pre {
   min-height: 160px;
   max-height: 280px;
@@ -1287,6 +1370,10 @@ pre {
 
   .attention-field {
     width: auto;
+  }
+
+  .line-accuracy-lines {
+    grid-template-columns: 1fr;
   }
 
   .result-list div,

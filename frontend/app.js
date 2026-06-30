@@ -102,8 +102,11 @@ const els = {
   ocrModalF1: $("#ocrModalF1"),
   ocrModalPrecision: $("#ocrModalPrecision"),
   ocrModalRecall: $("#ocrModalRecall"),
+  ocrCompositeScore: $("#ocrCompositeScore"),
   ocrMissingCount: $("#ocrMissingCount"),
   ocrAddedCount: $("#ocrAddedCount"),
+  ocrMissingLines: $("#ocrMissingLines"),
+  ocrAddedLines: $("#ocrAddedLines"),
   ocrFieldResultsBody: $("#ocrFieldResultsBody"),
   llmSection: $("#llmSection"),
   legacyLlmNote: $("#legacyLlmNote"),
@@ -281,12 +284,33 @@ function reportRunTime(report) {
 }
 
 function ocrEval(report) {
-  if (report.ocr_eval?.diff_result || report.ocr_eval?.f1_scores) return report.ocr_eval;
+  if (report.ocr_eval?.diff_result || report.ocr_eval?.ocr_score || report.ocr_eval?.f1_scores) return report.ocr_eval;
+  if (report.ocr_eval?.composite_score !== undefined) {
+    return {
+      diff_result: { total_missing: report.ocr_eval.missing_lines ?? 0, total_added: 0 },
+      jiwer_result: {
+        line_results: Array.from({ length: Number(report.ocr_eval.line_count || 0) }, () => ({})),
+      },
+      fuzz_result: {},
+      ocr_score: {
+        structural_score: report.ocr_eval.structural_score,
+        text_accuracy_score: report.ocr_eval.text_accuracy_score,
+        similarity_score: report.ocr_eval.similarity_score,
+        composite_score: report.ocr_eval.composite_score,
+      },
+    };
+  }
   if (report.ocr_eval?.f1 !== undefined) {
     return {
       diff_result: { total_missing: report.ocr_eval.missing_lines ?? 0, total_added: 0 },
       jiwer_result: {},
       fuzz_result: {},
+      ocr_score: {
+        structural_score: report.ocr_eval.f1,
+        text_accuracy_score: report.ocr_eval.precision,
+        similarity_score: report.ocr_eval.recall,
+        composite_score: report.ocr_eval.f1,
+      },
       f1_scores: {
         f1: report.ocr_eval.f1,
         precision: report.ocr_eval.precision,
@@ -299,12 +323,26 @@ function ocrEval(report) {
     diff_result: report.diff_result || {},
     jiwer_result: report.jiwer_result || {},
     fuzz_result: report.fuzz_result || {},
+    ocr_score: report.ocr_score || {},
     f1_scores: report.f1_scores || report.ocr_eval || {},
   };
 }
 
 function ocrScores(report) {
-  return ocrEval(report).f1_scores || report.ocr_eval || {};
+  const ocr = ocrEval(report);
+  if (ocr.ocr_score) {
+    const composite = ocr.ocr_score.composite_score;
+    return {
+      f1: composite,
+      precision: ocr.ocr_score.text_accuracy_score ?? composite,
+      recall: ocr.ocr_score.similarity_score ?? composite,
+      structural_score: ocr.ocr_score.structural_score,
+      text_accuracy_score: ocr.ocr_score.text_accuracy_score,
+      similarity_score: ocr.ocr_score.similarity_score,
+      composite_score: composite,
+    };
+  }
+  return ocr.f1_scores || report.ocr_eval || {};
 }
 
 function hasObjectEntries(value) {
@@ -372,6 +410,7 @@ function comparisonRow(label, value) {
 function renderComparisonCard(kind, scoreData, detailRows) {
   const iconClass = kind === "ocr" ? "ti ti-scan" : "ti ti-braces";
   const label = kind === "ocr" ? "OCR eval" : "LLM eval";
+  const scoreLabel = kind === "ocr" ? "Composite score" : "F1 score";
   return `
     <article class="comparison-card">
       <div class="comparison-card-title">
@@ -380,7 +419,7 @@ function renderComparisonCard(kind, scoreData, detailRows) {
       </div>
       <div class="comparison-score">
         <strong>${formatScore(scoreData.f1)}</strong>
-        <span>F1 score</span>
+        <span>${scoreLabel}</span>
       </div>
       <div class="comparison-divider"></div>
       ${comparisonRow("Precision", formatScore(scoreData.precision))}
@@ -394,7 +433,8 @@ function renderComparisonCard(kind, scoreData, detailRows) {
 function buildAttentionList(report) {
   const ocr = ocrEval(report);
   const llm = llmEval(report);
-  const fuzz = ocr.fuzz_result || {};
+  const rawFuzz = ocr.fuzz_result || {};
+  const fuzz = rawFuzz.overall_score === undefined ? rawFuzz : {};
   const jiwer = ocr.jiwer_result || {};
   const llmComparison = llm?.field_comparison || {};
   const fields = new Set([...Object.keys(fuzz), ...Object.keys(llmComparison)]);
@@ -454,16 +494,14 @@ function buildAttentionList(report) {
 function renderSummaryTab(report) {
   const ocr = ocrEval(report);
   const llm = llmEval(report);
-  const ocrScore = ocr.f1_scores || {};
-  const ocrResults = Object.values(ocr.fuzz_result || {});
-  const ocrTp = ocrResults.filter((result) => result?.status === "TP").length;
-  const ocrTotal = ocrResults.length;
+  const ocrScore = ocrScores(report);
+  const lineResults = ocr.jiwer_result?.line_results || [];
   const missingLines = ocr.diff_result?.total_missing ?? 0;
 
   const cards = [
     renderComparisonCard("ocr", ocrScore, [
       comparisonRow("Missing lines", String(missingLines)),
-      comparisonRow("Fields passed", `${ocrTp} / ${ocrTotal}`),
+      comparisonRow("Lines checked", String(lineResults.length)),
     ]),
   ];
 
@@ -484,10 +522,11 @@ function renderSummaryTab(report) {
 
   const attentionItems = buildAttentionList(report);
   if (!attentionItems.length) {
+    const emptyText = llm ? "No structured field issues found" : "No structured LLM fields available for attention review";
     els.attentionList.innerHTML = `
       <div class="empty-success-state">
         <span class="ti ti-circle-check" aria-hidden="true"></span>
-        <strong>All fields passed in both evals</strong>
+        <strong>${emptyText}</strong>
       </div>
     `;
     return;
@@ -656,7 +695,7 @@ function renderRunResult(report) {
   setText(els.resultOcrPrecision, formatScore(ocr.precision));
   setText(els.resultOcrRecall, formatScore(ocr.recall));
   setText(els.resultOcrMissing, ocrInfo.diff_result?.total_missing ?? report.ocr_eval?.missing_lines ?? "-");
-  setText(els.resultOcrFields, ocrInfo.field_count ?? report.ocr_eval?.field_count ?? Object.keys(ocrInfo.fuzz_result || {}).length);
+  setText(els.resultOcrFields, ocrInfo.jiwer_result?.line_results?.length ?? "-");
   setText(els.resultLlmF1, formatScore(llm.f1));
   setText(els.resultLlmPrecision, formatScore(llm.precision));
   setText(els.resultLlmRecall, formatScore(llm.recall));
@@ -791,7 +830,7 @@ async function getReport(name) {
 function openReportModal(report) {
   state.activeModalReport = report;
   const ocr = ocrEval(report);
-  const scores = ocr.f1_scores || {};
+  const scores = ocrScores(report);
   const combined = combinedScores(report);
   const llm = llmEval(report);
 
@@ -802,34 +841,49 @@ function openReportModal(report) {
   els.combinedModalF1.textContent = formatScore(combined.f1);
   els.combinedModalPrecision.textContent = formatScore(combined.precision);
   els.combinedModalRecall.textContent = formatScore(combined.recall);
-  els.ocrModalF1.textContent = formatScore(scores.f1);
-  els.ocrModalPrecision.textContent = formatScore(scores.precision);
-  els.ocrModalRecall.textContent = formatScore(scores.recall);
+  els.ocrModalF1.textContent = formatScore(scores.structural_score);
+  els.ocrModalPrecision.textContent = formatScore(scores.text_accuracy_score);
+  els.ocrModalRecall.textContent = formatScore(scores.similarity_score);
+  els.ocrCompositeScore.textContent = formatScore(scores.composite_score);
   renderSummaryTab(report);
 
   const diff = ocr.diff_result || {};
   els.ocrMissingCount.textContent = diff.total_missing ?? 0;
   els.ocrAddedCount.textContent = diff.total_added ?? 0;
+  els.ocrMissingLines.textContent = (diff.missing_lines || []).join("\n") || "No missing lines";
+  els.ocrAddedLines.textContent = (diff.added_lines || []).join("\n") || "No added lines";
 
-  const fuzz = ocr.fuzz_result || {};
   const jiwer = ocr.jiwer_result || {};
-  const rows = Object.entries(fuzz).map(([field, result]) => {
-    const fieldJiwer = jiwer[field] || {};
+  const rows = [...(jiwer.line_results || [])]
+    .sort((a, b) => Number(b.cer || 0) - Number(a.cer || 0))
+    .map((result) => {
     return `
-      <tr class="${statusRowClass(result.status)}">
-        <td>${escapeHtml(field)}</td>
-        <td>${formatScore(fieldJiwer.cer)}</td>
-        <td>${formatScore(fieldJiwer.wer)}</td>
-        <td>${formatScore(result.score)}</td>
-        <td>${statusPill(result.status)}</td>
-      </tr>
+      <article class="line-accuracy-row">
+        <header>
+          <strong>Line ${escapeHtml(result.line_number)}</strong>
+          <span>
+            <span class="metric-badge">CER ${formatScore(result.cer)}</span>
+            <span class="metric-badge">WER ${formatScore(result.wer)}</span>
+          </span>
+        </header>
+        <div class="line-accuracy-lines">
+          <div>
+            <span class="line-label">Golden markdown</span>
+            <p class="line-text">${escapeHtml(result.golden_line)}</p>
+          </div>
+          <div>
+            <span class="line-label">OCR markdown</span>
+            <p class="line-text">${escapeHtml(result.ocr_line)}</p>
+          </div>
+        </div>
+      </article>
     `;
   });
   const ocrEmptyMessage =
     report.eval_type === "llm"
       ? "OCR eval was not run for this saved LLM-only report"
-      : "No OCR field results available from this report";
-  els.ocrFieldResultsBody.innerHTML = rows.join("") || `<tr><td colspan="5" class="empty-row">${ocrEmptyMessage}</td></tr>`;
+      : "No line-level OCR accuracy available from this report";
+  els.ocrFieldResultsBody.innerHTML = rows.join("") || `<div class="empty-row">${ocrEmptyMessage}</div>`;
 
   if (!llm) {
     els.legacyLlmNote.hidden = false;

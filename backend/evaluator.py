@@ -20,9 +20,11 @@ AZURE_COGNITIVE_SERVICES_SCOPE = "https://cognitiveservices.azure.com/.default"
 
 def run_difflib(golden_md: str, ocr_md: str) -> dict[str, Any]:
     """Compare markdown line by line and return missing and added lines."""
+    golden_lines = golden_md.splitlines()
+    ocr_lines = ocr_md.splitlines()
     diff = difflib.unified_diff(
-        golden_md.splitlines(),
-        ocr_md.splitlines(),
+        golden_lines,
+        ocr_lines,
         lineterm="",
     )
     missing_lines: list[str] = []
@@ -41,6 +43,80 @@ def run_difflib(golden_md: str, ocr_md: str) -> dict[str, Any]:
         "added_lines": added_lines,
         "total_missing": len(missing_lines),
         "total_added": len(added_lines),
+        "total_golden_lines": len([line for line in golden_lines if line.strip()]),
+        "total_ocr_lines": len([line for line in ocr_lines if line.strip()]),
+    }
+
+
+def run_jiwer_on_markdown(golden_markdown: str, ocr_markdown: str) -> dict[str, Any]:
+    """Calculate overall and line-level CER/WER between golden and OCR markdown text."""
+    golden_lines = [line for line in golden_markdown.splitlines() if line.strip()]
+    ocr_lines = [line for line in ocr_markdown.splitlines() if line.strip()]
+    available_ocr_lines = list(ocr_lines)
+    line_results: list[dict[str, Any]] = []
+
+    for index, golden_line in enumerate(golden_lines, start=1):
+        if available_ocr_lines:
+            matches = difflib.get_close_matches(golden_line, available_ocr_lines, n=1, cutoff=0)
+            ocr_line = matches[0] if matches else ""
+            if ocr_line in available_ocr_lines:
+                available_ocr_lines.remove(ocr_line)
+        else:
+            ocr_line = ""
+
+        line_results.append(
+            {
+                "line_number": index,
+                "golden_line": golden_line,
+                "ocr_line": ocr_line,
+                "cer": round(cer(golden_line, ocr_line), 4),
+                "wer": round(wer(golden_line, ocr_line), 4),
+            }
+        )
+
+    return {
+        "overall_cer": round(cer(golden_markdown, ocr_markdown), 4),
+        "overall_wer": round(wer(golden_markdown, ocr_markdown), 4),
+        "line_results": line_results,
+    }
+
+
+def run_rapidfuzz_on_markdown(golden_markdown: str, ocr_markdown: str) -> dict[str, Any]:
+    """Calculate whole-document fuzzy similarity for OCR markdown text."""
+    overall_score = round(float(fuzz.ratio(golden_markdown, ocr_markdown)), 4)
+    token_sort_score = round(float(fuzz.token_sort_ratio(golden_markdown, ocr_markdown)), 4)
+    if overall_score >= 90:
+        status = "PASS"
+    elif overall_score < 70:
+        status = "FAIL"
+    else:
+        status = "GREY"
+
+    return {
+        "overall_score": overall_score,
+        "token_sort_score": token_sort_score,
+        "status": status,
+    }
+
+
+def calculate_ocr_markdown_score(
+    diff_result: dict[str, Any],
+    jiwer_result: dict[str, Any],
+    fuzz_result: dict[str, Any],
+) -> dict[str, float]:
+    """Calculate composite OCR quality scores from markdown diff, CER, and fuzzy similarity."""
+    total_golden_lines = max(int(diff_result.get("total_golden_lines") or 0), 1)
+    missing_added = int(diff_result.get("total_missing") or 0) + int(diff_result.get("total_added") or 0)
+    structural_score = max(0.0, 1 - (missing_added / total_golden_lines))
+    text_accuracy_score = max(0.0, 1 - float(jiwer_result.get("overall_cer") or 0))
+    similarity_score = max(0.0, min(1.0, float(fuzz_result.get("overall_score") or 0) / 100))
+    composite_score = (structural_score + text_accuracy_score + similarity_score) / 3
+
+    return {
+        "structural_score": round(structural_score, 4),
+        "text_accuracy_score": round(text_accuracy_score, 4),
+        "similarity_score": round(similarity_score, 4),
+        "composite_score": round(composite_score, 4),
     }
 
 
