@@ -8,57 +8,25 @@ import os
 from typing import Any
 
 from backend.cleaner import clean_ocr_markdown
-from backend.normalizer import normalize_keys_to_camel
+from backend.normalizer import normalize_keys_to_camel, to_camel_case
 
 
 logger = logging.getLogger(__name__)
-DOCUMENT_TYPE_KEYS = {
-    "tax_invoice": ("taxInvoice",),
-    "purchase_order": ("purchaseOrder",),
-    "proforma_invoice": ("proformaInvoice",),
+
+
+GDS_METADATA_KEYS = {
+    "documentType",
+    "extractionConfidence",
+    "extractedData",
+    "processingTimestamp",
+    "processedBy",
+    "service",
+    "aiBackend",
+    "modelUsed",
+    "usageInfo",
+    "confidenceScore",
+    "source",
 }
-SUPPORTED_DOCUMENT_KEYS = {
-    key for keys in DOCUMENT_TYPE_KEYS.values() for key in keys
-}
-TAX_INVOICE_FIELD_TYPES = {
-    "clientId": "text",
-    "billTo": "text",
-    "deliveryTo": "text",
-    "invoiceNo": "text",
-    "date": "date",
-    "poNo": "text",
-    "terms": "text",
-    "sales": "text",
-    "rqNo": "text",
-}
-EVAL_FIELD_KEYS = (
-    "clientId",
-    "billTo",
-    "deliveryTo",
-    "invoiceNo",
-    "date",
-    "poNo",
-    "terms",
-    "sales",
-    "rqNo",
-    "lineItems"
-)
-
-
-def _normalize_document_type(document_type: str) -> str:
-    """Normalize a document type label to the GDS key lookup format."""
-    normalized = document_type.strip().lower().replace("-", "_").replace(" ", "_")
-    aliases = {
-        "taxinvoice": "tax_invoice",
-        "purchaseorder": "purchase_order",
-        "proformainvoice": "proforma_invoice",
-    }
-    return aliases.get(normalized, normalized)
-
-
-def _document_keys_for(document_type: str) -> tuple[str, ...]:
-    """Return camelCase-first document keys for a document type."""
-    return DOCUMENT_TYPE_KEYS.get(_normalize_document_type(document_type), ())
 
 
 def get_gds_path() -> str:
@@ -149,47 +117,85 @@ def _load_golden_file(path: str) -> list[dict[str, Any]]:
 
 
 def infer_document_type(record: dict[str, Any]) -> str:
-    """Infer a document type from the first supported document key in a record.
-
-    Checks the configured ``jsonOutput`` object for the first supported
-    camelCase document array.
-    """
+    """Infer a document type from the first non-empty GDS document array."""
     normalized_record = normalize_keys_to_camel(record)
     json_output = normalized_record.get("jsonOutput")
     if isinstance(json_output, dict):
-        for normalized_type, keys in DOCUMENT_TYPE_KEYS.items():
-            for key in keys:
-                value = json_output.get(key)
-                if isinstance(value, list) and value:
-                    return normalized_type
+        for key, value in json_output.items():
+            if isinstance(value, list) and value:
+                return str(key)
 
     return ""
 
 
-def _first_document_record(record: dict[str, Any], document_type: str) -> dict[str, Any]:
-    """Return the first document object from a GDS record for a document type.
-
-    Reads the configured camelCase ``jsonOutput`` object and returns the first
-    document entry for the requested document type.
-    """
+def _first_document_value(record: dict[str, Any], document_type: str) -> Any:
+    """Return document data from GDS jsonOutput while skipping metadata objects."""
+    del document_type
     normalized_record = normalize_keys_to_camel(record)
-    document_keys = _document_keys_for(document_type)
-    if not document_keys:
-        inferred_type = infer_document_type(normalized_record)
-        document_keys = _document_keys_for(inferred_type)
-
     json_output = normalized_record.get("jsonOutput")
     if isinstance(json_output, dict):
-        for document_key in document_keys:
-            value = json_output.get(document_key)
-            if isinstance(value, list) and value:
-                first_item = value[0]
-                return first_item if isinstance(first_item, dict) else {}
-            if isinstance(value, dict):
-                return value
+        extracted_fields = json_output.get("extractedFields")
+        if isinstance(extracted_fields, list) and extracted_fields:
+            return normalize_keys_to_camel(extracted_fields)
 
-    logger.warning("No GDS expected fields found for document type: %s", document_type)
+        for document_key, value in json_output.items():
+            if document_key in GDS_METADATA_KEYS or document_key == "extractedFields":
+                continue
+            if isinstance(value, list) and value:
+                return normalize_keys_to_camel(value)
+
+        for document_key, value in json_output.items():
+            if document_key in GDS_METADATA_KEYS or document_key == "extractedFields":
+                continue
+            if isinstance(value, dict):
+                return normalize_keys_to_camel(value)
+
+        data_fields = {
+            key: value
+            for key, value in json_output.items()
+            if key not in GDS_METADATA_KEYS and key != "extractedFields"
+        }
+        if data_fields:
+            return normalize_keys_to_camel(data_fields)
+
+    logger.warning(
+        "No GDS document data found for filename: %s",
+        normalized_record.get("filename", "<unknown>"),
+    )
     return {}
+
+
+def _first_document_record(record: dict[str, Any], document_type: str) -> dict[str, Any]:
+    """Return the first flat document object from GDS data."""
+    document_value = _first_document_value(record, document_type)
+    if isinstance(document_value, list) and document_value:
+        first_item = document_value[0]
+        return first_item if isinstance(first_item, dict) else {}
+    return document_value if isinstance(document_value, dict) else {}
+
+
+def _flatten_field_name_value_list(items: list[Any]) -> dict[str, Any]:
+    """Convert a fieldName/value list into a flat camelCase field dictionary."""
+    fields: dict[str, Any] = {}
+    for item in items:
+        normalized_item = normalize_keys_to_camel(item)
+        if not isinstance(normalized_item, dict) or "fieldName" not in normalized_item:
+            continue
+        field_name = str(normalized_item.get("fieldName") or "").strip()
+        if not field_name:
+            continue
+        value = normalized_item.get("value", "")
+        fields[to_camel_case(field_name)] = "" if value is None else str(value).strip()
+    return fields
+
+
+def _flat_fields_from_object(document_record: dict[str, Any]) -> dict[str, Any]:
+    """Return flat top-level fields from a document object."""
+    return {
+        key: ("" if value is None else value)
+        for key, value in document_record.items()
+        if key != "lineItems" and key not in GDS_METADATA_KEYS
+    }
 
 
 def _available_filenames(records: list[dict[str, Any]]) -> list[str]:
@@ -264,25 +270,70 @@ def get_reference_markdown(record: dict[str, Any]) -> str:
 
 
 def get_expected_fields_from_record(record: dict[str, Any], document_type: str) -> dict[str, Any]:
-    """Return top-level expected GDS fields for a document type."""
-    document_record = normalize_keys_to_camel(_first_document_record(record, document_type))
-    if not document_record:
-        logger.warning("No GDS expected fields found for document type: %s", document_type)
+    """Return expected GDS fields from extractedFields lists or flat document objects."""
+    normalized_record = normalize_keys_to_camel(record)
+    json_output = normalized_record.get("jsonOutput")
+    if isinstance(json_output, dict):
+        extracted_fields = json_output.get("extractedFields")
+        if isinstance(extracted_fields, list) and extracted_fields:
+            logger.info("GDS field pattern: extractedFields list")
+            return _flatten_field_name_value_list(extracted_fields)
+
+    document_value = _first_document_value(record, document_type)
+    if not document_value:
+        logger.warning(
+            "No GDS expected fields found for filename: %s",
+            normalized_record.get("filename", "<unknown>"),
+        )
         return {}
-    return {
-        key: ("" if document_record.get(key) is None else document_record.get(key, ""))
-        for key in EVAL_FIELD_KEYS
-    }
+
+    if isinstance(document_value, list) and document_value:
+        first_item = normalize_keys_to_camel(document_value[0])
+        if isinstance(first_item, dict) and "fieldName" in first_item:
+            logger.info("GDS field pattern: extractedFields list")
+            return _flatten_field_name_value_list(document_value)
+        if isinstance(first_item, dict):
+            logger.info("GDS field pattern: flat document list")
+            return _flat_fields_from_object(first_item)
+
+    if isinstance(document_value, dict):
+        extracted_fields = document_value.get("extractedFields")
+        if isinstance(extracted_fields, list) and extracted_fields:
+            first_item = normalize_keys_to_camel(extracted_fields[0])
+            if isinstance(first_item, dict) and "fieldName" in first_item:
+                logger.info("GDS field pattern: extractedFields list")
+                return _flatten_field_name_value_list(extracted_fields)
+        logger.info("GDS field pattern: flat document list")
+        return _flat_fields_from_object(document_value)
+
+    logger.warning("No usable GDS field pattern found for document type: %s", document_type)
+    return {}
 
 
-def get_field_types_from_record(record: dict[str, Any], document_type: str) -> dict[str, str]:
-    """Return camelCase field type mapping for the document type."""
-    return TAX_INVOICE_FIELD_TYPES.copy()
+def get_field_types_from_record(
+    record: dict[str, Any],
+    document_type: str,
+    fields: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Infer field types from an already-flattened field dict when provided."""
+    expected_fields = fields if fields is not None else get_expected_fields_from_record(record, document_type)
+    date_terms = ("date", "dob", "expiry", "issued", "birth")
+    numeric_terms = ("amount", "total", "price", "fee", "cost", "gst", "tax")
+    field_types: dict[str, str] = {}
+    for field_name in expected_fields:
+        normalized_name = field_name.lower()
+        if any(term in normalized_name for term in date_terms):
+            field_types[field_name] = "date"
+        elif any(term in normalized_name for term in numeric_terms):
+            field_types[field_name] = "numeric"
+        else:
+            field_types[field_name] = "text"
+    return field_types
 
 
 def get_expected_line_items(record: dict[str, Any], document_type: str) -> list[dict[str, Any]]:
-    """Return expected line items from the first GDS document record."""
-    document_record = normalize_keys_to_camel(_first_document_record(record, document_type))
+    """Return expected line items from the first non-empty GDS document list."""
+    document_record = _first_document_record(record, document_type)
     line_items = document_record.get("lineItems") if document_record else None
     # TODO: line items eval not implemented yet.
     if not isinstance(line_items, list):

@@ -107,7 +107,9 @@ const els = {
   ocrCompositeScore: $("#ocrCompositeScore"),
   ocrStructuralStatus: $("#ocrStructuralStatus"),
   ocrMarkdownDiffPanel: $("#ocrMarkdownDiffPanel"),
+  ocrMissingLinesSection: $("#ocrMissingLinesSection"),
   ocrMissingLines: $("#ocrMissingLines"),
+  ocrAddedLinesSection: $("#ocrAddedLinesSection"),
   ocrAddedLines: $("#ocrAddedLines"),
   ocrLineFilters: $("#ocrLineFilters"),
   ocrFieldResultsBody: $("#ocrFieldResultsBody"),
@@ -201,7 +203,50 @@ function escapeHtml(value) {
 }
 
 function formatScore(value) {
-  return typeof value === "number" ? value.toFixed(4) : "-";
+  if (value === null || value === undefined || value === "") return "—";
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return "—";
+  const percentage = numericValue <= 1 ? numericValue * 100 : numericValue;
+  return `${percentage.toFixed(1)}%`;
+}
+
+const metricTooltips = {
+  "Structure match": "How many lines from the golden markdown were found in the OCR output. 100% means no lines were missing or added.",
+  "Character accuracy": "Character Error Rate inverted to a score. Measures how accurately individual characters were read. Low character errors = high score.",
+  "Content similarity": "Overall fuzzy similarity between the full golden markdown and OCR markdown. Accounts for minor text differences.",
+  "OCR quality": "Combined average of structure, character accuracy, and content similarity. The headline OCR health number.",
+  "Extraction score": "F1 score for LLM field extraction. Balances accuracy (were extracted values correct) and coverage (were all expected fields found).",
+  "Accuracy": "Of all fields the LLM extracted, what percentage had correct values. High accuracy means few wrong extractions.",
+  "Coverage": "Of all fields that should have been extracted, what percentage did the LLM find. Low coverage means fields are being missed.",
+  "Overall score": "Combined score averaging OCR quality and LLM extraction score. The single headline health number for this run.",
+  "Correct fields": "Fields that were extracted with correct values.",
+  "Wrong fields": "Fields that were extracted but with incorrect values.",
+  "Missing fields": "Fields expected in the document that were not extracted by the LLM step.",
+  "Needs review": "Fields where the match score was between 70-90%. These need manual verification - they may be correct or partially correct.",
+};
+
+function metricInfo(label) {
+  const tooltip = metricTooltips[label];
+  return tooltip
+    ? `<span class="ti ti-info-circle metric-info" title="${escapeHtml(tooltip)}" aria-label="${escapeHtml(tooltip)}"></span>`
+    : "";
+}
+
+function enhanceMetricLabels(root = document) {
+  root.querySelectorAll(".score-card span, .modal-summary span, .eval-stat-grid span, .run-output-card span").forEach((label) => {
+    const labelText = Array.from(label.childNodes)
+      .filter((node) => node.nodeType === Node.TEXT_NODE)
+      .map((node) => node.textContent)
+      .join("")
+      .trim();
+    const tooltip = metricTooltips[labelText];
+    if (!tooltip || label.querySelector(".metric-info")) return;
+    const icon = document.createElement("span");
+    icon.className = "ti ti-info-circle metric-info";
+    icon.title = tooltip;
+    icon.setAttribute("aria-label", tooltip);
+    label.append(" ", icon);
+  });
 }
 
 function setText(element, value) {
@@ -406,7 +451,7 @@ function percentText(value) {
 function renderComparisonCard(kind, scoreData) {
   const iconClass = kind === "ocr" ? "ti ti-scan" : "ti ti-braces";
   const label = kind === "ocr" ? "OCR eval" : "LLM eval";
-  const scoreLabel = kind === "ocr" ? "composite score" : "F1 score";
+  const scoreLabel = kind === "ocr" ? "OCR quality" : "Extraction score";
   return `
     <article class="comparison-card">
       <div class="comparison-card-title">
@@ -415,7 +460,7 @@ function renderComparisonCard(kind, scoreData) {
       </div>
       <div class="comparison-score">
         <strong>${formatScore(scoreData.f1)}</strong>
-        <span>${scoreLabel}</span>
+        <span>${scoreLabel} ${metricInfo(scoreLabel)}</span>
       </div>
     </article>
   `;
@@ -563,9 +608,17 @@ function truncateText(value, maxLength = 60) {
 }
 
 function lineTone(line) {
-  const worst = Math.max(Number(line?.cer || 0), Number(line?.wer || 0));
-  if (worst > 0 && worst <= 0.15) return "pro";
-  return "danger";
+  return lineSeverity(line).tone;
+}
+
+function lineSeverity(line) {
+  const cerValue = Number(line?.cer || 0);
+  const werValue = Number(line?.wer || 0);
+  if (cerValue >= 0.5) return { label: "High error", tone: "danger" };
+  if (cerValue >= 0.15) return { label: "Partial mismatch", tone: "warning" };
+  if (cerValue >= 0.01) return { label: "Minor difference", tone: "pro" };
+  if (werValue > 0) return { label: "Word order differs", tone: "pro" };
+  return { label: "Perfect match", tone: "success" };
 }
 
 function renderOcrLineResults(lineResults) {
@@ -589,13 +642,15 @@ function renderOcrLineResults(lineResults) {
   const shouldShowMismatches = activeFilter === "mismatches";
   const mismatchHtml = shouldShowMismatches
     ? mismatches
-        .map((result) => `
+        .map((result) => {
+          const severity = lineSeverity(result);
+          return `
           <article class="line-mismatch-box tone-${lineTone(result)}">
             <header>
               <strong>Line ${escapeHtml(result.line_number)}</strong>
-              <span>
-                <span class="metric-badge">CER ${formatScore(result.cer)}</span>
-                <span class="metric-badge">WER ${formatScore(result.wer)}</span>
+              <span class="line-severity">
+                <span class="severity-label tone-${severity.tone}">${severity.label}</span>
+                <small>CER ${formatScore(result.cer)} · WER ${formatScore(result.wer)}</small>
               </span>
             </header>
             <div class="line-accuracy-lines">
@@ -609,7 +664,8 @@ function renderOcrLineResults(lineResults) {
               </div>
             </div>
           </article>
-        `)
+        `;
+        })
         .join("")
     : "";
 
@@ -1005,6 +1061,8 @@ function openReportModal(report) {
   const diff = ocr.diff_result || {};
   const totalMissing = Number(diff.total_missing || 0);
   const totalAdded = Number(diff.total_added || 0);
+  const missingLines = diff.missing_lines || [];
+  const addedLines = diff.added_lines || [];
   const hasStructuralDiff = totalMissing > 0 || totalAdded > 0;
   els.ocrStructuralStatus.hidden = hasStructuralDiff;
   els.ocrStructuralStatus.innerHTML = hasStructuralDiff
@@ -1014,8 +1072,10 @@ function openReportModal(report) {
       <span>No structural differences - every line in the golden markdown was found in OCR output</span>
     `;
   els.ocrMarkdownDiffPanel.hidden = !hasStructuralDiff;
-  els.ocrMissingLines.textContent = (diff.missing_lines || []).join("\n") || "No missing lines";
-  els.ocrAddedLines.textContent = (diff.added_lines || []).join("\n") || "No added lines";
+  if (els.ocrMissingLinesSection) els.ocrMissingLinesSection.hidden = missingLines.length === 0;
+  if (els.ocrAddedLinesSection) els.ocrAddedLinesSection.hidden = addedLines.length === 0;
+  els.ocrMissingLines.textContent = missingLines.join("\n");
+  els.ocrAddedLines.textContent = addedLines.join("\n");
 
   const jiwer = ocr.jiwer_result || {};
   const lineGroups = groupLinesByMatch(jiwer.line_results || []);
@@ -1275,6 +1335,7 @@ function init() {
   wireEvaluationForm();
   wireHistory();
   wireModalAndHealth();
+  enhanceMetricLabels();
   refreshAll();
 }
 

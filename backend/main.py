@@ -38,7 +38,6 @@ from backend.golden_loader import (
     load_all_golden,
     load_golden_by_filename,
     startup_check,
-    SUPPORTED_DOCUMENT_KEYS,
 )
 from backend.normalizer import normalize_keys_to_camel
 from backend.report import save_report
@@ -220,21 +219,48 @@ def _load_golden_record(filename: str) -> dict[str, Any]:
 
 
 def _detect_document_type(llm_output: dict[str, Any] | None) -> str:
-    """Detect the document type from DocsAI LLM output keys."""
+    """Detect document type from nested extraction metadata or document lists."""
     output = normalize_keys_to_camel(llm_output) if isinstance(llm_output, dict) else {}
     extracted_data = output.get("extractedData")
     if isinstance(extracted_data, dict):
         output = normalize_keys_to_camel(extracted_data)
 
-    if isinstance(output.get("taxInvoice"), list) and output.get("taxInvoice"):
-        return "tax_invoice"
-    if isinstance(output.get("purchaseOrder"), list) and output.get("purchaseOrder"):
-        return "purchase_order"
-    if isinstance(output.get("proformaInvoice"), list) and output.get("proformaInvoice"):
-        return "proforma_invoice"
+    extraction = output.get("extraction")
+    if isinstance(extraction, dict):
+        inner = normalize_keys_to_camel(extraction)
+        document_type = inner.get("documentType")
+        if isinstance(document_type, dict):
+            document_type_value = document_type.get("value")
+            if document_type_value:
+                return str(document_type_value)
+        if isinstance(inner.get("extractedFields"), list) and inner["extractedFields"]:
+            return "passport"
+        nested_type = _detect_document_type(inner)
+        if nested_type != "unknown":
+            return nested_type
 
-    logger.warning("Unable to detect document type from LLM output; defaulting to tax_invoice.")
-    return "tax_invoice"
+    skip_keys = {
+        "success",
+        "extractionConfidence",
+        "purchaseOrder",
+        "proformaInvoice",
+        "documentType",
+        "lineItems",
+    }
+    for key, value in output.items():
+        if key == "extractedFields" and isinstance(value, list) and value:
+            return "passport"
+        if key in skip_keys:
+            continue
+        if isinstance(value, list) and value:
+            return str(key)
+        if isinstance(value, dict):
+            nested_type = _detect_document_type(value)
+            if nested_type != "unknown":
+                return nested_type
+
+    logger.warning("Unable to detect document type from LLM output; returning unknown.")
+    return "unknown"
 
 
 def _run_ocr_eval_steps(
@@ -269,11 +295,15 @@ def _run_llm_eval_steps(
 ) -> dict[str, Any]:
     """Run LLM field comparison steps without saving a report."""
     golden_fields = get_expected_fields_from_record(record, document_type)
-    field_types = get_field_types_from_record(record, document_type)
-    llm_fields = extract_ocr_fields(run_data.get("llm_output"), document_type)
+    field_types = get_field_types_from_record(record, document_type, fields=golden_fields)
+    ocr_fields = extract_ocr_fields(run_data.get("llm_output"), document_type)
+    logger.info("LLM eval - document_type detected: %s", document_type)
+    logger.info("LLM eval - golden_fields keys: %s", list(golden_fields.keys()))
+    logger.info("LLM eval - ocr_fields keys: %s", list(ocr_fields.keys()))
+    logger.info("LLM eval - field count: golden=%s, ocr=%s", len(golden_fields), len(ocr_fields))
 
     try:
-        field_comparison = run_llm_field_comparison(golden_fields, llm_fields, field_types)
+        field_comparison = run_llm_field_comparison(golden_fields, ocr_fields, field_types)
         f1_scores = calculate_llm_f1(field_comparison)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"LLM eval calculation error: {exc}") from exc
@@ -449,16 +479,16 @@ def _validate_golden_record(record: Any, line_number: int) -> None:
         or normalized_record.get("ocrMarkdown")
     )
     json_output = normalized_record.get("jsonOutput")
-    has_document_key = any(key in normalized_record for key in SUPPORTED_DOCUMENT_KEYS)
+    has_document_key = any(isinstance(value, list) and value for value in normalized_record.values())
     has_json_output_document_key = isinstance(json_output, dict) and any(
-        key in json_output for key in SUPPORTED_DOCUMENT_KEYS
+        isinstance(value, list) and value for value in json_output.values()
     )
     if not has_reference and not has_document_key and not has_json_output_document_key:
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Line {line_number}: record must include reference_markdown "
-                "or at least one supported document key."
+                "or at least one non-empty document list."
             ),
         )
 

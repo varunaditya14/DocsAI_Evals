@@ -12,6 +12,7 @@
   --warning: #f59e0b;
   --text-success: var(--success);
   --text-danger: var(--danger);
+  --text-warning: var(--warning);
   --text-pro: var(--primary);
   --shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
 }
@@ -1075,12 +1076,31 @@ dd {
   content: "?";
 }
 
+.ti-info-circle::before {
+  content: "i";
+}
+
 .ti-download::before {
   content: "↓";
 }
 
 .ti-external-link::before {
   content: "↗";
+}
+
+.metric-info {
+  width: 14px;
+  height: 14px;
+  display: inline-grid;
+  place-items: center;
+  margin-left: 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1;
+  vertical-align: middle;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  text-transform: none;
 }
 
 .preview-panel {
@@ -1200,6 +1220,13 @@ dd {
   margin-top: 12px;
 }
 
+.line-accuracy-help,
+.diff-subtitle {
+  margin: 0 0 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .line-filter-row,
 .field-filter-row {
   display: flex;
@@ -1246,6 +1273,10 @@ dd {
   border-left: 4px solid var(--text-pro);
 }
 
+.line-mismatch-box.tone-warning {
+  border-left: 4px solid var(--text-warning);
+}
+
 .line-mismatch-box header {
   display: flex;
   align-items: center;
@@ -1254,10 +1285,49 @@ dd {
   margin-bottom: 10px;
 }
 
-.line-mismatch-box header span {
+.line-mismatch-box header > span {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.line-severity {
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.line-severity small {
+  flex-basis: 100%;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.severity-label {
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.severity-label.tone-danger {
+  color: var(--text-danger);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.severity-label.tone-warning {
+  color: var(--text-warning);
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.severity-label.tone-pro {
+  color: var(--text-pro);
+  background: var(--primary-soft);
+}
+
+.severity-label.tone-success {
+  color: var(--text-success);
+  background: rgba(22, 163, 74, 0.1);
 }
 
 .line-accuracy-lines {

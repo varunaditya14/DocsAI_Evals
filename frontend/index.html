@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DocsAI Evals Portal</title>
-    <link rel="stylesheet" href="/assets/styles.css?v=20260630-llm-field-tabs" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260702-dynamic-schema-percent-metrics" />
   </head>
   <body>
     <header class="topbar">
@@ -68,12 +68,12 @@
               <strong id="totalRuns">0</strong>
             </article>
             <article class="stat-card">
-              <span>Average F1</span>
-              <strong id="averageF1">0.0000</strong>
+              <span>Average score</span>
+              <strong id="averageF1">0.0%</strong>
             </article>
             <article class="stat-card">
-              <span>Average Recall</span>
-              <strong id="averageRecall">0.0000</strong>
+              <span>Average coverage</span>
+              <strong id="averageRecall">0.0%</strong>
             </article>
             <article class="stat-card">
               <span>Worst Performing Field</span>
@@ -90,9 +90,9 @@
               <span id="dashboardHealthPill" class="status-pill partial">CHECKING</span>
             </div>
             <div class="score-grid">
-              <div class="score-card"><span>Precision</span><strong id="latestPrecision">-</strong></div>
-              <div class="score-card"><span>Recall</span><strong id="latestRecall">-</strong></div>
-              <div class="score-card"><span>F1 Score</span><strong id="latestF1">-</strong></div>
+              <div class="score-card"><span>Accuracy</span><strong id="latestPrecision">-</strong></div>
+              <div class="score-card"><span>Coverage</span><strong id="latestRecall">-</strong></div>
+              <div class="score-card"><span>Overall score</span><strong id="latestF1">-</strong></div>
               <div class="score-card"><span>Missing Lines</span><strong id="latestMissing">-</strong></div>
             </div>
           </section>
@@ -112,7 +112,7 @@
                     <th>Report Name</th>
                     <th>Run ID</th>
                     <th>Filename</th>
-                    <th>F1</th>
+                    <th>Overall score</th>
                     <th>Status</th>
                     <th>Actions</th>
                   </tr>
@@ -213,28 +213,28 @@
               </dl>
               <div class="run-output-grid">
                 <article class="run-output-card combined-output">
-                  <span>Evals Report</span>
+                  <span>Overall score</span>
                   <strong id="resultF1">-</strong>
-                  <small>Precision <b id="resultPrecision">-</b> / Recall <b id="resultRecall">-</b></small>
+                  <small>Accuracy <b id="resultPrecision">-</b> / Coverage <b id="resultRecall">-</b></small>
                 </article>
                 <article class="run-output-card">
-                  <span>OCR Evaluation</span>
+                  <span>OCR quality</span>
                   <strong id="resultOcrF1">-</strong>
-                  <small>Precision <b id="resultOcrPrecision">-</b> / Recall <b id="resultOcrRecall">-</b></small>
+                  <small>Character accuracy <b id="resultOcrPrecision">-</b> / Content similarity <b id="resultOcrRecall">-</b></small>
                 </article>
                 <article class="run-output-card">
-                  <span>LLM Evaluation</span>
+                  <span>Extraction score</span>
                   <strong id="resultLlmF1">-</strong>
-                  <small>Precision <b id="resultLlmPrecision">-</b> / Recall <b id="resultLlmRecall">-</b></small>
+                  <small>Accuracy <b id="resultLlmPrecision">-</b> / Coverage <b id="resultLlmRecall">-</b></small>
                 </article>
               </div>
               <div class="run-counts-grid">
                 <div><span>OCR Missing Lines</span><strong id="resultOcrMissing">-</strong></div>
                 <div><span>OCR Lines</span><strong id="resultOcrFields">-</strong></div>
-                <div><span>LLM TP</span><strong id="resultLlmTp">-</strong></div>
-                <div><span>LLM FP</span><strong id="resultLlmFp">-</strong></div>
-                <div><span>LLM FN</span><strong id="resultLlmFn">-</strong></div>
-                <div><span>LLM GREY</span><strong id="resultLlmGrey">-</strong></div>
+                <div><span>Correct fields</span><strong id="resultLlmTp">-</strong></div>
+                <div><span>Wrong fields</span><strong id="resultLlmFp">-</strong></div>
+                <div><span>Missing fields</span><strong id="resultLlmFn">-</strong></div>
+                <div><span>Needs review</span><strong id="resultLlmGrey">-</strong></div>
               </div>
               <button id="openLatestReport" class="secondary-button" type="button" disabled>Open Full Report</button>
             </section>
@@ -281,9 +281,9 @@
                   <tr>
                     <th>Report Name</th>
                     <th>Filename</th>
-                    <th><button id="sortF1" class="sort-button" type="button">Evals F1 <span id="sortF1Indicator">down</span></button></th>
-                    <th>OCR F1</th>
-                    <th>LLM F1</th>
+                    <th><button id="sortF1" class="sort-button" type="button">Overall score <span id="sortF1Indicator">down</span></button></th>
+                    <th>OCR quality</th>
+                    <th>Extraction score</th>
                     <th>Status</th>
                     <th>Actions</th>
                   </tr>
@@ -366,9 +366,9 @@
         <div class="modal-summary">
           <div><span>Run ID</span><strong id="modalRunId">-</strong></div>
           <div><span>Filename</span><strong id="modalFilename">-</strong></div>
-          <div><span>Evals Report F1</span><strong id="combinedModalF1" class="combined-f1">-</strong></div>
-          <div><span>Evals Report Precision</span><strong id="combinedModalPrecision">-</strong></div>
-          <div><span>Evals Report Recall</span><strong id="combinedModalRecall">-</strong></div>
+          <div><span>Overall score</span><strong id="combinedModalF1" class="combined-f1">-</strong></div>
+          <div><span>Accuracy</span><strong id="combinedModalPrecision">-</strong></div>
+          <div><span>Coverage</span><strong id="combinedModalRecall">-</strong></div>
         </div>
         <nav class="modal-tabs" aria-label="Report sections">
           <button class="modal-tab active" type="button" data-report-tab="summary">Summary</button>
@@ -397,27 +397,30 @@
           <section id="ocrTabPanel" class="preview-panel eval-section report-tab-panel" data-report-panel="ocr">
             <h3>OCR Evaluation</h3>
             <div class="eval-stat-grid">
-              <div><span>Structural score</span><strong id="ocrModalF1">-</strong></div>
-              <div><span>Text accuracy score</span><strong id="ocrModalPrecision">-</strong></div>
-              <div><span>Similarity score</span><strong id="ocrModalRecall">-</strong></div>
-              <div><span>Composite score</span><strong id="ocrCompositeScore">-</strong></div>
+              <div><span>Structure match</span><strong id="ocrModalF1">-</strong></div>
+              <div><span>Character accuracy</span><strong id="ocrModalPrecision">-</strong></div>
+              <div><span>Content similarity</span><strong id="ocrModalRecall">-</strong></div>
+              <div><span>OCR quality</span><strong id="ocrCompositeScore">-</strong></div>
             </div>
             <div id="ocrStructuralStatus" class="structural-status-banner"></div>
             <details id="ocrMarkdownDiffPanel" class="markdown-diff-panel">
               <summary>Markdown differences</summary>
               <div class="diff-grid">
-                <div>
-                  <h3>Missing lines</h3>
-                  <pre id="ocrMissingLines">No missing lines</pre>
+                <div id="ocrMissingLinesSection">
+                  <h3>Lines in golden not found in OCR</h3>
+                  <p class="diff-subtitle">These lines exist in the reference document but were not extracted by Mistral OCR</p>
+                  <pre id="ocrMissingLines"></pre>
                 </div>
-                <div>
-                  <h3>Added lines</h3>
-                  <pre id="ocrAddedLines">No added lines</pre>
+                <div id="ocrAddedLinesSection">
+                  <h3>Lines OCR extracted that were not expected</h3>
+                  <p class="diff-subtitle">These lines were extracted by OCR but do not exist in the golden reference. May indicate OCR hallucination or document noise.</p>
+                  <pre id="ocrAddedLines"></pre>
                 </div>
               </div>
             </details>
             <div class="line-accuracy-section">
               <h3>Line-level accuracy</h3>
+              <p class="line-accuracy-help">A mismatch means the OCR read this line differently from the golden reference. CER measures character-level errors (0% = perfect match).</p>
               <div id="ocrLineFilters" class="line-filter-row"></div>
               <div id="ocrFieldResultsBody" class="line-accuracy-list"></div>
             </div>
@@ -426,13 +429,13 @@
             <h3>LLM Evaluation</h3>
             <p id="legacyLlmNote" class="legacy-note" hidden>LLM eval not available for this report</p>
             <div class="eval-stat-grid">
-              <div><span>F1</span><strong id="llmModalF1">-</strong></div>
-              <div><span>Precision</span><strong id="llmModalPrecision">-</strong></div>
-              <div><span>Recall</span><strong id="llmModalRecall">-</strong></div>
-              <div><span>TP</span><strong id="llmTp">-</strong></div>
-              <div><span>FP</span><strong id="llmFp">-</strong></div>
-              <div><span>FN</span><strong id="llmFn">-</strong></div>
-              <div><span>GREY</span><strong id="llmGrey">-</strong></div>
+              <div><span>Extraction score</span><strong id="llmModalF1">-</strong></div>
+              <div><span>Accuracy</span><strong id="llmModalPrecision">-</strong></div>
+              <div><span>Coverage</span><strong id="llmModalRecall">-</strong></div>
+              <div><span>Correct fields</span><strong id="llmTp">-</strong></div>
+              <div><span>Wrong fields</span><strong id="llmFp">-</strong></div>
+              <div><span>Missing fields</span><strong id="llmFn">-</strong></div>
+              <div><span>Needs review</span><strong id="llmGrey">-</strong></div>
             </div>
             <div id="llmFieldFilters" class="field-filter-row"></div>
             <div class="table-wrap modal-table">
@@ -453,6 +456,6 @@
       </section>
     </div>
 
-    <script src="/assets/app.js?v=20260630-llm-field-tabs"></script>
+    <script src="/assets/app.js?v=20260702-dynamic-schema-percent-metrics"></script>
   </body>
 </html>
