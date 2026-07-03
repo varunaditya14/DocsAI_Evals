@@ -22,6 +22,18 @@ SKIP_EXTRACTION_KEYS = {
     "documentType",
     "success",
 }
+CLASSIFICATION_KEYS = {
+    "fileId",
+    "detectedFormType",
+    "isValidCategory",
+    "classificationTimestamp",
+    "classificationDuration",
+    "headerPattern",
+    "validationReason",
+    "confidence",
+    "originalFilename",
+    "fileType",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -71,13 +83,23 @@ def _document_values_from_mapping(value: Any) -> dict[str, Any]:
     return normalize_keys_to_camel(extracted_data) if extracted_data else mapping
 
 
+def _is_classification_record(value: Any) -> bool:
+    """Return True when a list item looks like classification metadata."""
+    normalized_value = normalize_keys_to_camel(value)
+    if not isinstance(normalized_value, dict):
+        return False
+    return bool(set(normalized_value) & CLASSIFICATION_KEYS)
+
+
 def _first_non_empty_document_list(value: Any) -> tuple[str, list[Any]]:
-    """Return the first non-empty document list from a DocsAI extraction payload."""
+    """Return the first non-classification document list from a DocsAI payload."""
     mapping = _document_values_from_mapping(value)
     for key, item in mapping.items():
         if key in SKIP_EXTRACTION_KEYS or key == "lineItems":
             continue
         if isinstance(item, list) and item:
+            if _is_classification_record(item[0]):
+                continue
             return str(key), item
         if isinstance(item, dict):
             nested_key, nested_items = _first_non_empty_document_list(item)
@@ -113,6 +135,39 @@ def _flatten_field_name_value_list(items: list[Any]) -> dict[str, Any]:
         value = normalized_item.get("value", "")
         fields[to_camel_case(field_name)] = _stringify_field_value(value)
     return fields
+
+
+def _fields_from_nested_extraction(extraction: dict[str, Any]) -> dict[str, Any]:
+    """Return camelCase fields from a nested extraction.extractedFields payload."""
+    extracted_fields = extraction.get("extractedFields")
+    if not isinstance(extracted_fields, list) or not extracted_fields:
+        return {}
+
+    result: dict[str, Any] = {}
+    for item in extracted_fields:
+        if not isinstance(item, dict):
+            continue
+        field_key = item.get("fieldName") or item.get("field_name")
+        if not field_key:
+            normalized_item = normalize_keys_to_camel(item)
+            field_key = normalized_item.get("fieldName")
+            value = normalized_item.get("value")
+        else:
+            value = item.get("value")
+        if not field_key:
+            continue
+        result[to_camel_case(str(field_key))] = _stringify_field_value(value)
+    return result
+
+
+def _has_nested_extraction_fields(llm_response: dict[str, Any]) -> bool:
+    """Return True when a DocsAI response has extraction.extractedFields data."""
+    normalized_response = normalize_keys_to_camel(llm_response)
+    extraction = normalized_response.get("extraction")
+    if not isinstance(extraction, dict):
+        return False
+    extracted_fields = extraction.get("extractedFields")
+    return isinstance(extracted_fields, list) and bool(extracted_fields)
 
 
 def _flat_fields_from_object(document_record: dict[str, Any]) -> dict[str, Any]:
@@ -158,10 +213,10 @@ def extract_ocr_fields(llm_output: Any, document_type: str) -> dict[str, Any]:
     normalized_output = normalize_keys_to_camel(_coerce_mapping(llm_output))
     extraction = normalized_output.get("extraction")
     if isinstance(extraction, dict):
-        logger.info("DocsAI output pattern: nested extraction")
-        extracted_fields = extraction.get("extractedFields")
-        if isinstance(extracted_fields, list) and extracted_fields:
-            return _flatten_field_name_value_list(extracted_fields)
+        nested_fields = _fields_from_nested_extraction(extraction)
+        if nested_fields:
+            logger.info("DocsAI output pattern: nested extraction")
+            return nested_fields
 
         document_key, records = _first_non_empty_document_list(extraction)
         if records:
@@ -218,26 +273,38 @@ def _extract_markdown_from_step(step: dict[str, Any], run_id: str) -> str:
     return markdown
 
 
-def _find_llm_output(steps: list[Any]) -> Any:
-    """Find the first LLM extraction output that contains document data."""
-    for step in steps:
-        if not isinstance(step, dict) or step.get("stepType") != "call_llm":
-            continue
-        step_id = str(step.get("stepId", ""))
-        if "extract-fields" not in step_id:
-            continue
-        output_data = _get_output_data(step)
-        llm_response = output_data.get("llm_response")
-        if _contains_extraction_document_key(llm_response):
-            return llm_response
+def _find_llm_output(steps: list[Any]) -> dict[str, Any] | None:
+    """Find the LLM extraction step output while avoiding classification steps.
+
+    Priority 1: nested extraction.extractedFields structure.
+    Priority 2: extract step with flat document list, excluding classification metadata.
+    Priority 3: extract-fields step fallback with usable document data.
+    """
+    priority2: dict[str, Any] | None = None
+    priority3: dict[str, Any] | None = None
 
     for step in steps:
         if not isinstance(step, dict) or step.get("stepType") != "call_llm":
             continue
+
         output_data = _get_output_data(step)
-        llm_response = output_data.get("llm_response")
-        if _contains_extraction_document_key(llm_response):
+        llm_response = _coerce_mapping(output_data.get("llm_response"))
+        if not llm_response:
+            continue
+
+        if _has_nested_extraction_fields(llm_response):
             return llm_response
+
+        step_id = str(step.get("stepId", "")).lower()
+        if "extract" in step_id and priority2 is None and _contains_extraction_document_key(llm_response):
+            priority2 = llm_response
+        if "extract-fields" in step_id and priority3 is None and _contains_extraction_document_key(llm_response):
+            priority3 = llm_response
+
+    selected_output = priority2 or priority3
+    if selected_output is not None:
+        return selected_output
+
     logger.warning("LLM extraction step not found; continuing without llm_output.")
     return None
 

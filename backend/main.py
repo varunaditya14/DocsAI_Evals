@@ -219,7 +219,7 @@ def _load_golden_record(filename: str) -> dict[str, Any]:
 
 
 def _detect_document_type(llm_output: dict[str, Any] | None) -> str:
-    """Detect document type from nested extraction metadata or document lists."""
+    """Detect document type from extraction output while skipping metadata payloads."""
     output = normalize_keys_to_camel(llm_output) if isinstance(llm_output, dict) else {}
     extracted_data = output.get("extractedData")
     if isinstance(extracted_data, dict):
@@ -245,6 +245,11 @@ def _detect_document_type(llm_output: dict[str, Any] | None) -> str:
         "purchaseOrder",
         "proformaInvoice",
         "documentType",
+        "classifiedFiles",
+        "categoryValidationStatus",
+        "categoryConfidence",
+        "detectedFormType",
+        "headerPattern",
         "lineItems",
     }
     for key, value in output.items():
