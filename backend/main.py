@@ -10,7 +10,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,11 +22,11 @@ from backend.cleaner import clean_ocr_markdown
 from backend.config import get_settings
 from backend.evaluator import (
     calculate_llm_f1,
-    calculate_f1,
+    calculate_ocr_markdown_score,
     run_llm_field_comparison,
     run_difflib,
-    run_jiwer_per_field,
-    run_rapidfuzz_per_field,
+    run_jiwer_on_markdown,
+    run_rapidfuzz_on_markdown,
 )
 from backend.golden_loader import (
     get_available_filenames,
@@ -38,7 +38,6 @@ from backend.golden_loader import (
     load_all_golden,
     load_golden_by_filename,
     startup_check,
-    SUPPORTED_DOCUMENT_KEYS,
 )
 from backend.normalizer import normalize_keys_to_camel
 from backend.report import save_report
@@ -94,6 +93,16 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def add_static_asset_cache_headers(request: Request, call_next):
+    """Prevent stale frontend assets during local UI iteration."""
+    response = await call_next(request)
+    if request.url.path.startswith("/assets/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     """Run non-fatal startup checks for paths, GDS, and OpenAI configuration."""
@@ -122,42 +131,34 @@ def _print_summary(
     diff_result: dict[str, Any],
     jiwer_result: dict[str, Any],
     fuzz_result: dict[str, Any],
-    f1_scores: dict[str, Any],
+    ocr_score: dict[str, Any],
     report_path: str,
 ) -> None:
     """Print a concise terminal summary of the evaluation."""
     print("DocsAI OCR Evaluation Summary")
     print(f"Missing lines: {diff_result['total_missing']}")
     print(f"Added lines: {diff_result['total_added']}")
-    print("Per-field CER/WER:")
-    for field, result in jiwer_result.items():
-        print(f"  {field}: CER={result['cer']} WER={result['wer']}")
-    print("Per-field status:")
-    for field, result in fuzz_result.items():
-        judged = " llm_judged=True" if result.get("llm_judged") else ""
-        print(f"  {field}: {result['status']} score={result['score']}{judged}")
+    print(f"Overall CER: {jiwer_result.get('overall_cer')}")
+    print(f"Overall WER: {jiwer_result.get('overall_wer')}")
+    print(f"Fuzzy status: {fuzz_result.get('status')} score={fuzz_result.get('overall_score')}")
     print(
-        "F1: "
-        f"precision={f1_scores['precision']} "
-        f"recall={f1_scores['recall']} "
-        f"f1={f1_scores['f1']} "
-        f"tp={f1_scores['tp']} fp={f1_scores['fp']} fn={f1_scores['fn']}"
+        "OCR composite: "
+        f"structural={ocr_score['structural_score']} "
+        f"text_accuracy={ocr_score['text_accuracy_score']} "
+        f"similarity={ocr_score['similarity_score']} "
+        f"composite={ocr_score['composite_score']}"
     )
     print(f"Report saved: {report_path}")
 
 
-def _calculate_combined(ocr_f1: dict[str, Any], llm_f1: dict[str, Any]) -> dict[str, float]:
-    """Average OCR and LLM precision, recall, and F1 into evals report scores."""
+def _calculate_combined(ocr_score: dict[str, Any], llm_f1: dict[str, Any]) -> dict[str, float]:
+    """Average OCR markdown score and LLM field F1 into evals report scores."""
+    ocr_composite = float(ocr_score.get("composite_score", 0))
+    llm_score = float(llm_f1.get("f1", 0))
     return {
-        "f1": round((float(ocr_f1.get("f1", 0)) + float(llm_f1.get("f1", 0))) / 2, 4),
-        "precision": round(
-            (float(ocr_f1.get("precision", 0)) + float(llm_f1.get("precision", 0))) / 2,
-            4,
-        ),
-        "recall": round(
-            (float(ocr_f1.get("recall", 0)) + float(llm_f1.get("recall", 0))) / 2,
-            4,
-        ),
+        "f1": round((ocr_composite + llm_score) / 2, 4),
+        "precision": round((ocr_composite + float(llm_f1.get("precision", 0))) / 2, 4),
+        "recall": round((ocr_composite + float(llm_f1.get("recall", 0))) / 2, 4),
     }
 
 
@@ -167,6 +168,16 @@ def _scores_from_f1(f1_scores: dict[str, Any]) -> dict[str, float]:
         "f1": round(float(f1_scores.get("f1", 0)), 4),
         "precision": round(float(f1_scores.get("precision", 0)), 4),
         "recall": round(float(f1_scores.get("recall", 0)), 4),
+    }
+
+
+def _scores_from_ocr_score(ocr_score: dict[str, Any]) -> dict[str, float]:
+    """Return evals report score fields from OCR markdown composite score."""
+    composite_score = round(float(ocr_score.get("composite_score", 0)), 4)
+    return {
+        "f1": composite_score,
+        "precision": composite_score,
+        "recall": composite_score,
     }
 
 
@@ -208,21 +219,53 @@ def _load_golden_record(filename: str) -> dict[str, Any]:
 
 
 def _detect_document_type(llm_output: dict[str, Any] | None) -> str:
-    """Detect the document type from DocsAI LLM output keys."""
+    """Detect document type from extraction output while skipping metadata payloads."""
     output = normalize_keys_to_camel(llm_output) if isinstance(llm_output, dict) else {}
     extracted_data = output.get("extractedData")
     if isinstance(extracted_data, dict):
         output = normalize_keys_to_camel(extracted_data)
 
-    if isinstance(output.get("taxInvoice"), list) and output.get("taxInvoice"):
-        return "tax_invoice"
-    if isinstance(output.get("purchaseOrder"), list) and output.get("purchaseOrder"):
-        return "purchase_order"
-    if isinstance(output.get("proformaInvoice"), list) and output.get("proformaInvoice"):
-        return "proforma_invoice"
+    extraction = output.get("extraction")
+    if isinstance(extraction, dict):
+        inner = normalize_keys_to_camel(extraction)
+        document_type = inner.get("documentType")
+        if isinstance(document_type, dict):
+            document_type_value = document_type.get("value")
+            if document_type_value:
+                return str(document_type_value)
+        if isinstance(inner.get("extractedFields"), list) and inner["extractedFields"]:
+            return "passport"
+        nested_type = _detect_document_type(inner)
+        if nested_type != "unknown":
+            return nested_type
 
-    logger.warning("Unable to detect document type from LLM output; defaulting to tax_invoice.")
-    return "tax_invoice"
+    skip_keys = {
+        "success",
+        "extractionConfidence",
+        "purchaseOrder",
+        "proformaInvoice",
+        "documentType",
+        "classifiedFiles",
+        "categoryValidationStatus",
+        "categoryConfidence",
+        "detectedFormType",
+        "headerPattern",
+        "lineItems",
+    }
+    for key, value in output.items():
+        if key == "extractedFields" and isinstance(value, list) and value:
+            return "passport"
+        if key in skip_keys:
+            continue
+        if isinstance(value, list) and value:
+            return str(key)
+        if isinstance(value, dict):
+            nested_type = _detect_document_type(value)
+            if nested_type != "unknown":
+                return nested_type
+
+    logger.warning("Unable to detect document type from LLM output; returning unknown.")
+    return "unknown"
 
 
 def _run_ocr_eval_steps(
@@ -230,42 +273,23 @@ def _run_ocr_eval_steps(
     record: dict[str, Any],
     document_type: str,
 ) -> dict[str, Any]:
-    """Run OCR markdown and field evaluation steps without saving a report."""
-    cleaned_ocr_markdown = clean_ocr_markdown(run_data["ocr_markdown"])
-    golden_md = clean_ocr_markdown(get_reference_markdown(record))
-    golden_fields = get_expected_fields_from_record(record, document_type)
-    field_types = get_field_types_from_record(record, document_type)
-
-    if not isinstance(golden_fields, dict):
-        raise HTTPException(status_code=422, detail="Eval calculation error: golden fields must be an object.")
-    if not isinstance(field_types, dict):
-        raise HTTPException(status_code=422, detail="Eval calculation error: field types must be an object.")
-
-    # TODO: Replace this placeholder with actual OCR field extraction in the next version.
-    ocr_fields = extract_ocr_fields(run_data.get("llm_output"), document_type)
-    if not ocr_fields:
-        logger.warning("OCR fields were empty; continuing evaluation as missing fields.")
-
+    """Run OCR markdown-only evaluation steps without saving a report."""
+    del document_type
+    golden_markdown = get_reference_markdown(record)
+    ocr_markdown = clean_ocr_markdown(run_data["ocr_markdown"])
     try:
-        diff_result = run_difflib(str(golden_md), cleaned_ocr_markdown)
-        jiwer_result = run_jiwer_per_field(golden_fields, ocr_fields)
-        fuzz_result, _grey_zone = run_rapidfuzz_per_field(golden_fields, ocr_fields, field_types)
-        display_fuzz_result = {
-            field: {
-                **result,
-                "type": result.get("field_type", field_types.get(field, "text")),
-            }
-            for field, result in fuzz_result.items()
-        }
-        f1_scores = calculate_f1(fuzz_result)
+        diff_result = run_difflib(golden_markdown, ocr_markdown)
+        jiwer_result = run_jiwer_on_markdown(golden_markdown, ocr_markdown)
+        fuzz_result = run_rapidfuzz_on_markdown(golden_markdown, ocr_markdown)
+        ocr_score = calculate_ocr_markdown_score(diff_result, jiwer_result, fuzz_result)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Eval calculation error: {exc}") from exc
 
     return {
         "diff_result": diff_result,
         "jiwer_result": jiwer_result,
-        "fuzz_result": display_fuzz_result,
-        "f1_scores": f1_scores,
+        "fuzz_result": fuzz_result,
+        "ocr_score": ocr_score,
     }
 
 
@@ -276,11 +300,15 @@ def _run_llm_eval_steps(
 ) -> dict[str, Any]:
     """Run LLM field comparison steps without saving a report."""
     golden_fields = get_expected_fields_from_record(record, document_type)
-    field_types = get_field_types_from_record(record, document_type)
-    llm_fields = extract_ocr_fields(run_data.get("llm_output"), document_type)
+    field_types = get_field_types_from_record(record, document_type, fields=golden_fields)
+    ocr_fields = extract_ocr_fields(run_data.get("llm_output"), document_type)
+    logger.info("LLM eval - document_type detected: %s", document_type)
+    logger.info("LLM eval - golden_fields keys: %s", list(golden_fields.keys()))
+    logger.info("LLM eval - ocr_fields keys: %s", list(ocr_fields.keys()))
+    logger.info("LLM eval - field count: golden=%s, ocr=%s", len(golden_fields), len(ocr_fields))
 
     try:
-        field_comparison = run_llm_field_comparison(golden_fields, llm_fields, field_types)
+        field_comparison = run_llm_field_comparison(golden_fields, ocr_fields, field_types)
         f1_scores = calculate_llm_f1(field_comparison)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"LLM eval calculation error: {exc}") from exc
@@ -309,7 +337,7 @@ def _save_full_evaluation_report(
             diff_result=ocr_eval["diff_result"],
             jiwer_result=ocr_eval["jiwer_result"],
             fuzz_result=ocr_eval["fuzz_result"],
-            ocr_f1=ocr_eval["f1_scores"],
+            ocr_score=ocr_eval["ocr_score"],
             llm_comparison_result=llm_eval["field_comparison"],
             llm_f1=llm_eval["f1_scores"],
             combined_scores=combined,
@@ -329,7 +357,7 @@ def _save_single_evaluation_report(
 ) -> str:
     """Save an OCR-only or LLM-only evaluation report."""
     if eval_type == "ocr":
-        evals_report = _scores_from_f1((ocr_eval or {}).get("f1_scores", {}))
+        evals_report = _scores_from_ocr_score((ocr_eval or {}).get("ocr_score", {}))
     elif eval_type == "llm":
         evals_report = _scores_from_f1((llm_eval or {}).get("f1_scores", {}))
     else:
@@ -344,7 +372,7 @@ def _save_single_evaluation_report(
             diff_result=(ocr_eval or {}).get("diff_result", {}),
             jiwer_result=(ocr_eval or {}).get("jiwer_result", {}),
             fuzz_result=(ocr_eval or {}).get("fuzz_result", {}),
-            ocr_f1=(ocr_eval or {}).get("f1_scores", {}),
+            ocr_score=(ocr_eval or {}).get("ocr_score", {}),
             llm_comparison_result=(llm_eval or {}).get("field_comparison", {}),
             llm_f1=(llm_eval or {}).get("f1_scores", {}),
             combined_scores=evals_report,
@@ -362,6 +390,7 @@ def _report_ocr_eval(report: dict[str, Any]) -> dict[str, Any]:
         "diff_result": report.get("diff_result", {}),
         "jiwer_result": report.get("jiwer_result", {}),
         "fuzz_result": report.get("fuzz_result", {}),
+        "ocr_score": report.get("ocr_score", {}),
         "f1_scores": report.get("f1_scores", {}),
     }
 
@@ -377,7 +406,10 @@ def _report_evals_scores(report: dict[str, Any]) -> dict[str, Any]:
     llm_eval = report.get("llm_eval")
     if isinstance(llm_eval, dict) and isinstance(llm_eval.get("f1_scores"), dict) and llm_eval["f1_scores"]:
         return llm_eval["f1_scores"]
-    return _report_ocr_eval(report).get("f1_scores", {})
+    ocr_eval = _report_ocr_eval(report)
+    if isinstance(ocr_eval.get("ocr_score"), dict) and ocr_eval["ocr_score"]:
+        return _scores_from_ocr_score(ocr_eval["ocr_score"])
+    return ocr_eval.get("f1_scores", {})
 
 
 def run_ocr_eval(run_id: str, filename: str) -> dict[str, Any]:
@@ -388,7 +420,7 @@ def run_ocr_eval(run_id: str, filename: str) -> dict[str, Any]:
         document_type = _detect_document_type(run_data.get("llm_output"))
         ocr_eval = _run_ocr_eval_steps(run_data, golden_record, document_type)
         llm_eval = _run_llm_eval_steps(run_data, golden_record, document_type)
-        combined_scores = _calculate_combined(ocr_eval["f1_scores"], llm_eval["f1_scores"])
+        combined_scores = _calculate_combined(ocr_eval["ocr_score"], llm_eval["f1_scores"])
         report_path = _save_full_evaluation_report(
             run_id,
             filename,
@@ -402,7 +434,7 @@ def run_ocr_eval(run_id: str, filename: str) -> dict[str, Any]:
             ocr_eval["diff_result"],
             ocr_eval["jiwer_result"],
             ocr_eval["fuzz_result"],
-            ocr_eval["f1_scores"],
+            ocr_eval["ocr_score"],
             report_path,
         )
         return {
@@ -411,11 +443,12 @@ def run_ocr_eval(run_id: str, filename: str) -> dict[str, Any]:
             "filename": filename,
             "report_name": os.path.basename(report_path),
             "ocr_eval": {
-                "f1": ocr_eval["f1_scores"]["f1"],
-                "precision": ocr_eval["f1_scores"]["precision"],
-                "recall": ocr_eval["f1_scores"]["recall"],
+                "composite_score": ocr_eval["ocr_score"]["composite_score"],
+                "structural_score": ocr_eval["ocr_score"]["structural_score"],
+                "text_accuracy_score": ocr_eval["ocr_score"]["text_accuracy_score"],
+                "similarity_score": ocr_eval["ocr_score"]["similarity_score"],
                 "missing_lines": ocr_eval["diff_result"]["total_missing"],
-                "field_count": len(ocr_eval["fuzz_result"]),
+                "line_count": len(ocr_eval["jiwer_result"].get("line_results", [])),
             },
             "llm_eval": {
                 "f1": llm_eval["f1_scores"]["f1"],
@@ -451,16 +484,16 @@ def _validate_golden_record(record: Any, line_number: int) -> None:
         or normalized_record.get("ocrMarkdown")
     )
     json_output = normalized_record.get("jsonOutput")
-    has_document_key = any(key in normalized_record for key in SUPPORTED_DOCUMENT_KEYS)
+    has_document_key = any(isinstance(value, list) and value for value in normalized_record.values())
     has_json_output_document_key = isinstance(json_output, dict) and any(
-        key in json_output for key in SUPPORTED_DOCUMENT_KEYS
+        isinstance(value, list) and value for value in json_output.values()
     )
     if not has_reference and not has_document_key and not has_json_output_document_key:
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Line {line_number}: record must include reference_markdown "
-                "or at least one supported document key."
+                "or at least one non-empty document list."
             ),
         )
 
@@ -781,7 +814,7 @@ def run_ocr_evaluation_only(request: EvalRequest) -> dict[str, Any]:
         "eval_type": "ocr",
         "report_name": os.path.basename(report_path),
         "ocr_eval": ocr_eval,
-        "evals_report": _scores_from_f1(ocr_eval["f1_scores"]),
+        "evals_report": _scores_from_ocr_score(ocr_eval["ocr_score"]),
     }
 
 
@@ -826,7 +859,7 @@ def run_full_evaluation_verbose(request: EvalRequest) -> dict[str, Any]:
     document_type = _detect_document_type(run_data.get("llm_output"))
     ocr_eval = _run_ocr_eval_steps(run_data, golden_record, document_type)
     llm_eval = _run_llm_eval_steps(run_data, golden_record, document_type)
-    combined = _calculate_combined(ocr_eval["f1_scores"], llm_eval["f1_scores"])
+    combined = _calculate_combined(ocr_eval["ocr_score"], llm_eval["f1_scores"])
     report_path = _save_full_evaluation_report(
         request.run_id,
         request.filename,

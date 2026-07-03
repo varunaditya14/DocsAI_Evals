@@ -7,6 +7,9 @@ const state = {
   historyPageSize: 5,
   latestReport: null,
   currentRunReport: null,
+  activeModalReport: null,
+  activeOcrLineFilter: "mismatches",
+  activeLlmFieldFilter: "failed",
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -101,8 +104,14 @@ const els = {
   ocrModalF1: $("#ocrModalF1"),
   ocrModalPrecision: $("#ocrModalPrecision"),
   ocrModalRecall: $("#ocrModalRecall"),
-  ocrMissingCount: $("#ocrMissingCount"),
-  ocrAddedCount: $("#ocrAddedCount"),
+  ocrCompositeScore: $("#ocrCompositeScore"),
+  ocrStructuralStatus: $("#ocrStructuralStatus"),
+  ocrMarkdownDiffPanel: $("#ocrMarkdownDiffPanel"),
+  ocrMissingLinesSection: $("#ocrMissingLinesSection"),
+  ocrMissingLines: $("#ocrMissingLines"),
+  ocrAddedLinesSection: $("#ocrAddedLinesSection"),
+  ocrAddedLines: $("#ocrAddedLines"),
+  ocrLineFilters: $("#ocrLineFilters"),
   ocrFieldResultsBody: $("#ocrFieldResultsBody"),
   llmSection: $("#llmSection"),
   legacyLlmNote: $("#legacyLlmNote"),
@@ -113,11 +122,15 @@ const els = {
   llmFp: $("#llmFp"),
   llmFn: $("#llmFn"),
   llmGrey: $("#llmGrey"),
+  llmFieldFilters: $("#llmFieldFilters"),
   llmFieldResultsBody: $("#llmFieldResultsBody"),
-  combinedSection: $("#combinedSection"),
-  combinedSectionF1: $("#combinedSectionF1"),
-  combinedSectionPrecision: $("#combinedSectionPrecision"),
-  combinedSectionRecall: $("#combinedSectionRecall"),
+  reportTabs: $$(".modal-tab"),
+  reportPanels: $$(".report-tab-panel"),
+  comparisonGrid: $("#comparisonGrid"),
+  summaryLlmNote: $("#summaryLlmNote"),
+  insightList: $("#insightList"),
+  downloadSummaryReport: $("#downloadSummaryReport"),
+  viewBreakdownButton: $("#viewBreakdownButton"),
 };
 
 const api = {
@@ -190,7 +203,50 @@ function escapeHtml(value) {
 }
 
 function formatScore(value) {
-  return typeof value === "number" ? value.toFixed(4) : "-";
+  if (value === null || value === undefined || value === "") return "—";
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return "—";
+  const percentage = numericValue <= 1 ? numericValue * 100 : numericValue;
+  return `${percentage.toFixed(1)}%`;
+}
+
+const metricTooltips = {
+  "Structure match": "How many lines from the golden markdown were found in the OCR output. 100% means no lines were missing or added.",
+  "Character accuracy": "Character Error Rate inverted to a score. Measures how accurately individual characters were read. Low character errors = high score.",
+  "Content similarity": "Overall fuzzy similarity between the full golden markdown and OCR markdown. Accounts for minor text differences.",
+  "OCR quality": "Combined average of structure, character accuracy, and content similarity. The headline OCR health number.",
+  "Extraction score": "F1 score for LLM field extraction. Balances accuracy (were extracted values correct) and coverage (were all expected fields found).",
+  "Accuracy": "Of all fields the LLM extracted, what percentage had correct values. High accuracy means few wrong extractions.",
+  "Coverage": "Of all fields that should have been extracted, what percentage did the LLM find. Low coverage means fields are being missed.",
+  "Overall score": "Combined score averaging OCR quality and LLM extraction score. The single headline health number for this run.",
+  "Correct fields": "Fields that were extracted with correct values.",
+  "Wrong fields": "Fields that were extracted but with incorrect values.",
+  "Missing fields": "Fields expected in the document that were not extracted by the LLM step.",
+  "Needs review": "Fields where the match score was between 70-90%. These need manual verification - they may be correct or partially correct.",
+};
+
+function metricInfo(label) {
+  const tooltip = metricTooltips[label];
+  return tooltip
+    ? `<span class="ti ti-info-circle metric-info" title="${escapeHtml(tooltip)}" aria-label="${escapeHtml(tooltip)}"></span>`
+    : "";
+}
+
+function enhanceMetricLabels(root = document) {
+  root.querySelectorAll(".score-card span, .modal-summary span, .eval-stat-grid span, .run-output-card span").forEach((label) => {
+    const labelText = Array.from(label.childNodes)
+      .filter((node) => node.nodeType === Node.TEXT_NODE)
+      .map((node) => node.textContent)
+      .join("")
+      .trim();
+    const tooltip = metricTooltips[labelText];
+    if (!tooltip || label.querySelector(".metric-info")) return;
+    const icon = document.createElement("span");
+    icon.className = "ti ti-info-circle metric-info";
+    icon.title = tooltip;
+    icon.setAttribute("aria-label", tooltip);
+    label.append(" ", icon);
+  });
 }
 
 function setText(element, value) {
@@ -277,12 +333,33 @@ function reportRunTime(report) {
 }
 
 function ocrEval(report) {
-  if (report.ocr_eval?.diff_result || report.ocr_eval?.f1_scores) return report.ocr_eval;
+  if (report.ocr_eval?.diff_result || report.ocr_eval?.ocr_score || report.ocr_eval?.f1_scores) return report.ocr_eval;
+  if (report.ocr_eval?.composite_score !== undefined) {
+    return {
+      diff_result: { total_missing: report.ocr_eval.missing_lines ?? 0, total_added: 0 },
+      jiwer_result: {
+        line_results: Array.from({ length: Number(report.ocr_eval.line_count || 0) }, () => ({})),
+      },
+      fuzz_result: {},
+      ocr_score: {
+        structural_score: report.ocr_eval.structural_score,
+        text_accuracy_score: report.ocr_eval.text_accuracy_score,
+        similarity_score: report.ocr_eval.similarity_score,
+        composite_score: report.ocr_eval.composite_score,
+      },
+    };
+  }
   if (report.ocr_eval?.f1 !== undefined) {
     return {
       diff_result: { total_missing: report.ocr_eval.missing_lines ?? 0, total_added: 0 },
       jiwer_result: {},
       fuzz_result: {},
+      ocr_score: {
+        structural_score: report.ocr_eval.f1,
+        text_accuracy_score: report.ocr_eval.precision,
+        similarity_score: report.ocr_eval.recall,
+        composite_score: report.ocr_eval.f1,
+      },
       f1_scores: {
         f1: report.ocr_eval.f1,
         precision: report.ocr_eval.precision,
@@ -295,12 +372,26 @@ function ocrEval(report) {
     diff_result: report.diff_result || {},
     jiwer_result: report.jiwer_result || {},
     fuzz_result: report.fuzz_result || {},
+    ocr_score: report.ocr_score || {},
     f1_scores: report.f1_scores || report.ocr_eval || {},
   };
 }
 
 function ocrScores(report) {
-  return ocrEval(report).f1_scores || report.ocr_eval || {};
+  const ocr = ocrEval(report);
+  if (ocr.ocr_score) {
+    const composite = ocr.ocr_score.composite_score;
+    return {
+      f1: composite,
+      precision: ocr.ocr_score.text_accuracy_score ?? composite,
+      recall: ocr.ocr_score.similarity_score ?? composite,
+      structural_score: ocr.ocr_score.structural_score,
+      text_accuracy_score: ocr.ocr_score.text_accuracy_score,
+      similarity_score: ocr.ocr_score.similarity_score,
+      composite_score: composite,
+    };
+  }
+  return ocr.f1_scores || report.ocr_eval || {};
 }
 
 function hasObjectEntries(value) {
@@ -342,6 +433,325 @@ function combinedScores(report) {
 
 function statusRowClass(status) {
   return `status-row ${statusClass(status)}`;
+}
+
+function setReportTab(tabName) {
+  els.reportTabs.forEach((tab) => {
+    tab.classList.toggle("active", tab.dataset.reportTab === tabName);
+  });
+  els.reportPanels.forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.reportPanel === tabName);
+  });
+}
+
+function percentText(value) {
+  return `${Math.round(Number(value || 0) * 100)}%`;
+}
+
+function renderComparisonCard(kind, scoreData) {
+  const iconClass = kind === "ocr" ? "ti ti-scan" : "ti ti-braces";
+  const label = kind === "ocr" ? "OCR eval" : "LLM eval";
+  const scoreLabel = kind === "ocr" ? "OCR quality" : "Extraction score";
+  return `
+    <article class="comparison-card">
+      <div class="comparison-card-title">
+        <span class="${iconClass}" aria-hidden="true"></span>
+        <strong>${label}</strong>
+      </div>
+      <div class="comparison-score">
+        <strong>${formatScore(scoreData.f1)}</strong>
+        <span>${scoreLabel} ${metricInfo(scoreLabel)}</span>
+      </div>
+    </article>
+  `;
+}
+
+function generateInsights(report) {
+  const ocr = ocrEval(report);
+  const llm = llmEval(report);
+  const diff = ocr.diff_result || {};
+  const ocrScore = ocr.ocr_score || {};
+  const llmComparison = llm?.field_comparison || {};
+  const totalMissing = Number(diff.total_missing || 0);
+  const totalAdded = Number(diff.total_added || 0);
+  const insights = [];
+
+  const ocrIsClean = totalMissing === 0 && totalAdded === 0;
+  insights.push(
+    ocrIsClean
+      ? {
+          icon: "ti-circle-check",
+          tone: "success",
+          text: "OCR text extraction is clean - no missing or extra lines in the markdown",
+        }
+      : {
+          icon: "ti-alert-triangle",
+          tone: "danger",
+          text: `OCR markdown has ${Math.round(totalMissing)} missing and ${Math.round(totalAdded)} added lines compared to the golden reference`,
+        },
+  );
+
+  const textAccuracy = Number(ocrScore.text_accuracy_score || 0);
+  insights.push(
+    textAccuracy >= 0.95
+      ? {
+          icon: "ti-circle-check",
+          tone: "success",
+          text: `Character-level accuracy is high across the document (${percentText(textAccuracy)})`,
+        }
+      : {
+          icon: "ti-alert-triangle",
+          tone: "danger",
+          text: `Character-level accuracy is ${percentText(textAccuracy)} - review flagged lines in OCR eval for specific errors`,
+        },
+  );
+
+  const entries = Object.entries(llmComparison);
+  const missingFields = entries.filter(([, result]) => result?.status === "FN");
+  if (missingFields.length > 3) {
+    insights.push({
+      icon: "ti-alert-triangle",
+      tone: "danger",
+      text: `${Math.round(missingFields.length)} fields were not extracted by the LLM step`,
+    });
+  } else {
+    missingFields.forEach(([field]) => {
+      insights.push({
+        icon: "ti-alert-triangle",
+        tone: "danger",
+        text: `${field} was not extracted by the LLM step, though it exists in the document`,
+      });
+    });
+  }
+
+  entries
+    .filter(([, result]) => result?.status === "FP")
+    .forEach(([field]) => {
+      insights.push({
+        icon: "ti-alert-triangle",
+        tone: "danger",
+        text: `${field} was extracted with an incorrect value`,
+      });
+    });
+
+  entries
+    .filter(([, result]) => result?.status === "GREY")
+    .forEach(([field]) => {
+      insights.push({
+        icon: "ti-help-circle",
+        tone: "pro",
+        text: `${field} formatting differs between expected and extracted - needs manual check`,
+      });
+    });
+
+  const llmHasIssues = entries.some(([, result]) => ["FN", "FP", "GREY"].includes(String(result?.status || "")));
+  if (ocrIsClean && textAccuracy >= 0.95 && !llmHasIssues && llm) {
+    insights.push({
+      icon: "ti-circle-check",
+      tone: "success",
+      text: "All checks passed - OCR and LLM extraction both match the golden dataset",
+    });
+  }
+
+  return insights;
+}
+
+function renderSummaryTab(report) {
+  const llm = llmEval(report);
+  const ocrScore = ocrScores(report);
+
+  const cards = [renderComparisonCard("ocr", ocrScore)];
+
+  if (llm) {
+    const llmScore = llm.f1_scores || {};
+    cards.push(renderComparisonCard("llm", llmScore));
+  }
+
+  els.comparisonGrid.classList.toggle("single-card", !llm);
+  els.comparisonGrid.innerHTML = cards.join("");
+  els.summaryLlmNote.hidden = Boolean(llm);
+
+  const llmScore = llm?.f1_scores || {};
+  const targetTab = !llm || Number(ocrScore.f1 || 0) < Number(llmScore.f1 || 0) ? "ocr" : "llm";
+  els.viewBreakdownButton.dataset.targetTab = targetTab;
+  els.viewBreakdownButton.innerHTML = `
+    <span class="ti ti-external-link" aria-hidden="true"></span>
+    View ${targetTab === "ocr" ? "OCR" : "LLM"} breakdown ↗
+  `;
+
+  els.insightList.innerHTML = generateInsights(report)
+    .map((item) => `
+      <div class="insight-row tone-${item.tone}">
+        <span class="insight-icon tone-${item.tone} ${item.icon}" aria-hidden="true"></span>
+        <span>${escapeHtml(item.text)}</span>
+      </div>
+    `)
+    .join("");
+}
+
+function groupLinesByMatch(lineResults) {
+  return (lineResults || []).reduce(
+    (groups, line) => {
+      const cerValue = Number(line?.cer || 0);
+      const werValue = Number(line?.wer || 0);
+      if (cerValue > 0 || werValue > 0) groups.mismatches.push(line);
+      else groups.matches.push(line);
+      return groups;
+    },
+    { mismatches: [], matches: [] },
+  );
+}
+
+function truncateText(value, maxLength = 60) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
+}
+
+function lineTone(line) {
+  return lineSeverity(line).tone;
+}
+
+function lineSeverity(line) {
+  const cerValue = Number(line?.cer || 0);
+  const werValue = Number(line?.wer || 0);
+  if (cerValue >= 0.5) return { label: "High error", tone: "danger" };
+  if (cerValue >= 0.15) return { label: "Partial mismatch", tone: "warning" };
+  if (cerValue >= 0.01) return { label: "Minor difference", tone: "pro" };
+  if (werValue > 0) return { label: "Word order differs", tone: "pro" };
+  return { label: "Perfect match", tone: "success" };
+}
+
+function renderOcrLineResults(lineResults) {
+  const groups = groupLinesByMatch(lineResults);
+  const mismatches = [...groups.mismatches].sort((a, b) => Number(b.cer || 0) - Number(a.cer || 0));
+  const matches = [...groups.matches].sort((a, b) => Number(a.line_number || 0) - Number(b.line_number || 0));
+  const totalCount = mismatches.length + matches.length;
+  const defaultFilter = mismatches.length > 0 ? "mismatches" : "matches";
+  const activeFilter = state.activeOcrLineFilter || defaultFilter;
+
+  state.activeOcrLineFilter = activeFilter;
+  els.ocrLineFilters.innerHTML = `
+    <button class="line-filter-tab ${activeFilter === "mismatches" ? "active" : ""}" type="button" data-line-filter="mismatches">
+      Mismatches ${Math.round(mismatches.length)}
+    </button>
+    <button class="line-filter-tab ${activeFilter === "matches" ? "active" : ""}" type="button" data-line-filter="matches">
+      Matching lines ${Math.round(matches.length)}
+    </button>
+  `;
+
+  const shouldShowMismatches = activeFilter === "mismatches";
+  const mismatchHtml = shouldShowMismatches
+    ? mismatches
+        .map((result) => {
+          const severity = lineSeverity(result);
+          return `
+          <article class="line-mismatch-box tone-${lineTone(result)}">
+            <header>
+              <strong>Line ${escapeHtml(result.line_number)}</strong>
+              <span class="line-severity">
+                <span class="severity-label tone-${severity.tone}">${severity.label}</span>
+                <small>CER ${formatScore(result.cer)} · WER ${formatScore(result.wer)}</small>
+              </span>
+            </header>
+            <div class="line-accuracy-lines">
+              <div>
+                <span class="line-label">Golden markdown</span>
+                <p class="line-text">${escapeHtml(result.golden_line)}</p>
+              </div>
+              <div>
+                <span class="line-label">OCR markdown</span>
+                <p class="line-text">${escapeHtml(result.ocr_line)}</p>
+              </div>
+            </div>
+          </article>
+        `;
+        })
+        .join("")
+    : "";
+
+  const shouldShowMatches = activeFilter === "matches";
+  const matchRows = shouldShowMatches
+    ? matches
+        .map((result) => `
+          <div class="line-match-compact">
+            <strong>Line ${escapeHtml(result.line_number)}</strong>
+            <span>${escapeHtml(truncateText(result.golden_line))}</span>
+            <em>CER ${formatScore(result.cer)}</em>
+          </div>
+        `)
+        .join("")
+    : "";
+
+  const matchToggle =
+    shouldShowMatches && matches.length > 0
+      ? `<div class="line-match-list">${matchRows}</div>`
+      : "";
+
+  const emptyMessage =
+    totalCount === 0
+      ? "No line-level OCR accuracy available from this report"
+      : "No mismatched lines found";
+
+  if (mismatchHtml || activeFilter === "mismatches") {
+    const mismatchContent =
+      mismatchHtml ||
+      `<div class="empty-success-state"><span class="ti ti-circle-check" aria-hidden="true"></span><strong>${emptyMessage}</strong></div>`;
+    els.ocrFieldResultsBody.innerHTML = `${mismatchContent}${matchToggle}`;
+  } else if (activeFilter === "matches") {
+    els.ocrFieldResultsBody.innerHTML =
+      matchToggle || `<div class="empty-row">No matching lines found</div>`;
+  }
+}
+
+function groupLlmFieldsByStatus(fieldComparison) {
+  return Object.entries(fieldComparison || {}).reduce(
+    (groups, [field, result]) => {
+      const status = String(result?.status || "").toUpperCase();
+      if (status === "TP") groups.pass.push([field, result]);
+      else if (status === "GREY") groups.uncertain.push([field, result]);
+      else groups.failed.push([field, result]);
+      return groups;
+    },
+    { pass: [], failed: [], uncertain: [] },
+  );
+}
+
+function renderLlmFieldResults(fieldComparison) {
+  const groups = groupLlmFieldsByStatus(fieldComparison);
+  const defaultFilter = groups.failed.length > 0 ? "failed" : groups.uncertain.length > 0 ? "uncertain" : "pass";
+  const activeFilter = state.activeLlmFieldFilter || defaultFilter;
+  state.activeLlmFieldFilter = activeFilter;
+
+  els.llmFieldFilters.innerHTML = `
+    <button class="line-filter-tab ${activeFilter === "pass" ? "active" : ""}" type="button" data-llm-filter="pass">
+      Pass ${Math.round(groups.pass.length)}
+    </button>
+    <button class="line-filter-tab ${activeFilter === "failed" ? "active" : ""}" type="button" data-llm-filter="failed">
+      Failed ${Math.round(groups.failed.length)}
+    </button>
+    <button class="line-filter-tab ${activeFilter === "uncertain" ? "active" : ""}" type="button" data-llm-filter="uncertain">
+      Uncertain ${Math.round(groups.uncertain.length)}
+    </button>
+  `;
+
+  const rows = groups[activeFilter] || [];
+  const emptyLabels = {
+    pass: "No passing LLM fields in this report",
+    failed: "No failed LLM fields in this report",
+    uncertain: "No uncertain LLM fields in this report",
+  };
+
+  els.llmFieldResultsBody.innerHTML =
+    rows
+      .map(([field, result]) => `
+        <tr class="${statusRowClass(result.status)}">
+          <td>${escapeHtml(field)}</td>
+          <td>${escapeHtml(result.golden_value)}</td>
+          <td>${escapeHtml(result.extracted_value)}</td>
+          <td>${statusPill(result.status)}</td>
+        </tr>
+      `)
+      .join("") || `<tr><td colspan="4" class="empty-row">${emptyLabels[activeFilter]}</td></tr>`;
 }
 
 function overallStatus(report) {
@@ -496,7 +906,7 @@ function renderRunResult(report) {
   setText(els.resultOcrPrecision, formatScore(ocr.precision));
   setText(els.resultOcrRecall, formatScore(ocr.recall));
   setText(els.resultOcrMissing, ocrInfo.diff_result?.total_missing ?? report.ocr_eval?.missing_lines ?? "-");
-  setText(els.resultOcrFields, ocrInfo.field_count ?? report.ocr_eval?.field_count ?? Object.keys(ocrInfo.fuzz_result || {}).length);
+  setText(els.resultOcrFields, ocrInfo.jiwer_result?.line_results?.length ?? "-");
   setText(els.resultLlmF1, formatScore(llm.f1));
   setText(els.resultLlmPrecision, formatScore(llm.precision));
   setText(els.resultLlmRecall, formatScore(llm.recall));
@@ -629,8 +1039,9 @@ async function getReport(name) {
 }
 
 function openReportModal(report) {
+  state.activeModalReport = report;
   const ocr = ocrEval(report);
-  const scores = ocr.f1_scores || {};
+  const scores = ocrScores(report);
   const combined = combinedScores(report);
   const llm = llmEval(report);
 
@@ -641,33 +1052,35 @@ function openReportModal(report) {
   els.combinedModalF1.textContent = formatScore(combined.f1);
   els.combinedModalPrecision.textContent = formatScore(combined.precision);
   els.combinedModalRecall.textContent = formatScore(combined.recall);
-  els.ocrModalF1.textContent = formatScore(scores.f1);
-  els.ocrModalPrecision.textContent = formatScore(scores.precision);
-  els.ocrModalRecall.textContent = formatScore(scores.recall);
+  els.ocrModalF1.textContent = formatScore(scores.structural_score);
+  els.ocrModalPrecision.textContent = formatScore(scores.text_accuracy_score);
+  els.ocrModalRecall.textContent = formatScore(scores.similarity_score);
+  els.ocrCompositeScore.textContent = formatScore(scores.composite_score);
+  renderSummaryTab(report);
 
   const diff = ocr.diff_result || {};
-  els.ocrMissingCount.textContent = diff.total_missing ?? 0;
-  els.ocrAddedCount.textContent = diff.total_added ?? 0;
-
-  const fuzz = ocr.fuzz_result || {};
-  const jiwer = ocr.jiwer_result || {};
-  const rows = Object.entries(fuzz).map(([field, result]) => {
-    const fieldJiwer = jiwer[field] || {};
-    return `
-      <tr class="${statusRowClass(result.status)}">
-        <td>${escapeHtml(field)}</td>
-        <td>${formatScore(fieldJiwer.cer)}</td>
-        <td>${formatScore(fieldJiwer.wer)}</td>
-        <td>${formatScore(result.score)}</td>
-        <td>${statusPill(result.status)}</td>
-      </tr>
+  const totalMissing = Number(diff.total_missing || 0);
+  const totalAdded = Number(diff.total_added || 0);
+  const missingLines = diff.missing_lines || [];
+  const addedLines = diff.added_lines || [];
+  const hasStructuralDiff = totalMissing > 0 || totalAdded > 0;
+  els.ocrStructuralStatus.hidden = hasStructuralDiff;
+  els.ocrStructuralStatus.innerHTML = hasStructuralDiff
+    ? ""
+    : `
+      <span class="ti ti-circle-check insight-icon tone-success" aria-hidden="true"></span>
+      <span>No structural differences - every line in the golden markdown was found in OCR output</span>
     `;
-  });
-  const ocrEmptyMessage =
-    report.eval_type === "llm"
-      ? "OCR eval was not run for this saved LLM-only report"
-      : "No OCR field results available from this report";
-  els.ocrFieldResultsBody.innerHTML = rows.join("") || `<tr><td colspan="5" class="empty-row">${ocrEmptyMessage}</td></tr>`;
+  els.ocrMarkdownDiffPanel.hidden = !hasStructuralDiff;
+  if (els.ocrMissingLinesSection) els.ocrMissingLinesSection.hidden = missingLines.length === 0;
+  if (els.ocrAddedLinesSection) els.ocrAddedLinesSection.hidden = addedLines.length === 0;
+  els.ocrMissingLines.textContent = missingLines.join("\n");
+  els.ocrAddedLines.textContent = addedLines.join("\n");
+
+  const jiwer = ocr.jiwer_result || {};
+  const lineGroups = groupLinesByMatch(jiwer.line_results || []);
+  state.activeOcrLineFilter = lineGroups.mismatches.length > 0 ? "mismatches" : "matches";
+  renderOcrLineResults(jiwer.line_results || []);
 
   if (!llm) {
     els.legacyLlmNote.hidden = false;
@@ -678,8 +1091,8 @@ function openReportModal(report) {
     els.llmFp.textContent = "-";
     els.llmFn.textContent = "-";
     els.llmGrey.textContent = "-";
+    els.llmFieldFilters.innerHTML = "";
     els.llmFieldResultsBody.innerHTML = '<tr><td colspan="4" class="empty-row">LLM eval was not run for this saved OCR-only or legacy report</td></tr>';
-    els.combinedSection.hidden = true;
   } else {
     const llmScores = llm.f1_scores || {};
     els.legacyLlmNote.hidden = true;
@@ -690,22 +1103,12 @@ function openReportModal(report) {
     els.llmFp.textContent = llmScores.fp ?? 0;
     els.llmFn.textContent = llmScores.fn ?? 0;
     els.llmGrey.textContent = llmScores.grey_count ?? 0;
-    els.combinedSection.hidden = false;
-    els.combinedSectionF1.textContent = formatScore(combined.f1);
-    els.combinedSectionPrecision.textContent = formatScore(combined.precision);
-    els.combinedSectionRecall.textContent = formatScore(combined.recall);
-    els.llmFieldResultsBody.innerHTML = Object.entries(llm.field_comparison || {})
-      .map(([field, result]) => `
-        <tr class="${statusRowClass(result.status)}">
-          <td>${escapeHtml(field)}</td>
-          <td>${escapeHtml(result.golden_value)}</td>
-          <td>${escapeHtml(result.extracted_value)}</td>
-          <td>${statusPill(result.status)}</td>
-        </tr>
-      `)
-      .join("") || '<tr><td colspan="4" class="empty-row">No LLM field results available from this report</td></tr>';
+    const groups = groupLlmFieldsByStatus(llm.field_comparison || {});
+    state.activeLlmFieldFilter = groups.failed.length > 0 ? "failed" : groups.uncertain.length > 0 ? "uncertain" : "pass";
+    renderLlmFieldResults(llm.field_comparison || {});
   }
 
+  setReportTab("summary");
   els.reportModal.hidden = false;
 }
 
@@ -895,6 +1298,28 @@ function wireHistory() {
 }
 
 function wireModalAndHealth() {
+  els.reportTabs.forEach((tab) => {
+    tab.addEventListener("click", () => setReportTab(tab.dataset.reportTab));
+  });
+  els.downloadSummaryReport.addEventListener("click", () => {
+    if (state.activeModalReport) downloadReport(state.activeModalReport);
+  });
+  els.viewBreakdownButton.addEventListener("click", () => setReportTab(els.viewBreakdownButton.dataset.targetTab || "ocr"));
+  els.ocrLineFilters.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-line-filter]");
+    if (!button || !state.activeModalReport) return;
+    state.activeOcrLineFilter = button.dataset.lineFilter;
+    const lineResults = ocrEval(state.activeModalReport).jiwer_result?.line_results || [];
+    renderOcrLineResults(lineResults);
+  });
+  els.llmFieldFilters.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-llm-filter]");
+    if (!button || !state.activeModalReport) return;
+    const llm = llmEval(state.activeModalReport);
+    if (!llm) return;
+    state.activeLlmFieldFilter = button.dataset.llmFilter;
+    renderLlmFieldResults(llm.field_comparison || {});
+  });
   els.closeModal.addEventListener("click", () => {
     els.reportModal.hidden = true;
   });
@@ -910,6 +1335,7 @@ function init() {
   wireEvaluationForm();
   wireHistory();
   wireModalAndHealth();
+  enhanceMetricLabels();
   refreshAll();
 }
 

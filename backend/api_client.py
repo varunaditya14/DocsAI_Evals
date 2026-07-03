@@ -11,31 +11,29 @@ import requests
 from backend.auth import clear_cached_token, get_bearer_token
 from backend.cleaner import clean_ocr_markdown
 from backend.config import get_settings
-from backend.normalizer import normalize_keys_to_camel
+from backend.normalizer import normalize_keys_to_camel, to_camel_case
 
 
 OCR_STEP_TYPE = "convert_text_from_document_using_mistral_ocr"
-DOCUMENT_TYPE_KEYS = {
-    "tax_invoice": ("taxInvoice",),
-    "purchase_order": ("purchaseOrder",),
-    "proforma_invoice": ("proformaInvoice",),
-}
-EXTRACTION_DOCUMENT_KEYS = (
-    "taxInvoice",
+SKIP_EXTRACTION_KEYS = {
+    "extractionConfidence",
     "purchaseOrder",
     "proformaInvoice",
-)
-LLM_EVAL_FIELD_KEYS = (
-    "clientId",
-    "billTo",
-    "deliveryTo",
-    "invoiceNo",
-    "date",
-    "poNo",
-    "terms",
-    "sales",
-    "rqNo",
-)
+    "documentType",
+    "success",
+}
+CLASSIFICATION_KEYS = {
+    "fileId",
+    "detectedFormType",
+    "isValidCategory",
+    "classificationTimestamp",
+    "classificationDuration",
+    "headerPattern",
+    "validationReason",
+    "confidence",
+    "originalFilename",
+    "fileType",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -78,17 +76,6 @@ def _coerce_mapping(value: Any) -> dict[str, Any]:
     return {}
 
 
-def _normalize_document_type(document_type: str) -> str:
-    """Normalize a document type label to the DocsAI extracted-data key format."""
-    normalized = document_type.strip().lower().replace("-", "_").replace(" ", "_")
-    aliases = {
-        "taxinvoice": "tax_invoice",
-        "purchaseorder": "purchase_order",
-        "proformainvoice": "proforma_invoice",
-    }
-    return aliases.get(normalized, normalized)
-
-
 def _document_values_from_mapping(value: Any) -> dict[str, Any]:
     """Return a mapping that may directly contain document extraction keys."""
     mapping = normalize_keys_to_camel(_coerce_mapping(value))
@@ -96,10 +83,34 @@ def _document_values_from_mapping(value: Any) -> dict[str, Any]:
     return normalize_keys_to_camel(extracted_data) if extracted_data else mapping
 
 
-def _contains_extraction_document_key(value: Any) -> bool:
-    """Return True when a value contains any supported document extraction key."""
+def _is_classification_record(value: Any) -> bool:
+    """Return True when a list item looks like classification metadata."""
+    normalized_value = normalize_keys_to_camel(value)
+    if not isinstance(normalized_value, dict):
+        return False
+    return bool(set(normalized_value) & CLASSIFICATION_KEYS)
+
+
+def _first_non_empty_document_list(value: Any) -> tuple[str, list[Any]]:
+    """Return the first non-classification document list from a DocsAI payload."""
     mapping = _document_values_from_mapping(value)
-    return any(key in mapping for key in EXTRACTION_DOCUMENT_KEYS)
+    for key, item in mapping.items():
+        if key in SKIP_EXTRACTION_KEYS or key == "lineItems":
+            continue
+        if isinstance(item, list) and item:
+            if _is_classification_record(item[0]):
+                continue
+            return str(key), item
+        if isinstance(item, dict):
+            nested_key, nested_items = _first_non_empty_document_list(item)
+            if nested_items:
+                return nested_key, nested_items
+    return "", []
+
+
+def _contains_extraction_document_key(value: Any) -> bool:
+    """Return True when a value contains at least one document extraction list."""
+    return bool(_first_non_empty_document_list(value)[1])
 
 
 def _stringify_field_value(value: Any) -> str:
@@ -108,64 +119,130 @@ def _stringify_field_value(value: Any) -> str:
         return ""
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False)
-    return str(value)
+    return str(value).strip()
+
+
+def _flatten_field_name_value_list(items: list[Any]) -> dict[str, Any]:
+    """Convert a fieldName/value list into a flat camelCase field dictionary."""
+    fields: dict[str, Any] = {}
+    for item in items:
+        normalized_item = normalize_keys_to_camel(item)
+        if not isinstance(normalized_item, dict) or "fieldName" not in normalized_item:
+            continue
+        field_name = str(normalized_item.get("fieldName") or "").strip()
+        if not field_name:
+            continue
+        value = normalized_item.get("value", "")
+        fields[to_camel_case(field_name)] = _stringify_field_value(value)
+    return fields
+
+
+def _fields_from_nested_extraction(extraction: dict[str, Any]) -> dict[str, Any]:
+    """Return camelCase fields from a nested extraction.extractedFields payload."""
+    extracted_fields = extraction.get("extractedFields")
+    if not isinstance(extracted_fields, list) or not extracted_fields:
+        return {}
+
+    result: dict[str, Any] = {}
+    for item in extracted_fields:
+        if not isinstance(item, dict):
+            continue
+        field_key = item.get("fieldName") or item.get("field_name")
+        if not field_key:
+            normalized_item = normalize_keys_to_camel(item)
+            field_key = normalized_item.get("fieldName")
+            value = normalized_item.get("value")
+        else:
+            value = item.get("value")
+        if not field_key:
+            continue
+        result[to_camel_case(str(field_key))] = _stringify_field_value(value)
+    return result
+
+
+def _has_nested_extraction_fields(llm_response: dict[str, Any]) -> bool:
+    """Return True when a DocsAI response has extraction.extractedFields data."""
+    normalized_response = normalize_keys_to_camel(llm_response)
+    extraction = normalized_response.get("extraction")
+    if not isinstance(extraction, dict):
+        return False
+    extracted_fields = extraction.get("extractedFields")
+    return isinstance(extracted_fields, list) and bool(extracted_fields)
+
+
+def _flat_fields_from_object(document_record: dict[str, Any]) -> dict[str, Any]:
+    """Return stringified top-level fields from a document object."""
+    return {
+        key: _stringify_field_value(value)
+        for key, value in document_record.items()
+        if key != "lineItems"
+    }
+
+
+def _fields_from_document_records(document_key: str, records: list[Any]) -> dict[str, Any]:
+    """Extract flat fields from a non-empty DocsAI document record list."""
+    try:
+        first_record = records[0]
+    except (IndexError, TypeError) as exc:
+        logger.warning("Unable to read first LLM record for document key %s: %s", document_key, exc)
+        return {}
+
+    if not isinstance(first_record, dict):
+        logger.warning("LLM extracted_data first item was not an object for document key: %s", document_key)
+        return {}
+
+    normalized_record = normalize_keys_to_camel(first_record)
+    if "fieldName" in normalized_record:
+        logger.info("DocsAI field pattern: fieldName/value list")
+        return _flatten_field_name_value_list(records)
+
+    if len(records) > 1:
+        logger.warning("Multiple LLM records found for document key %s; using the first.", document_key)
+
+    logger.info("DocsAI field pattern: flat object")
+    return _flat_fields_from_object(normalized_record)
 
 
 def extract_ocr_fields(llm_output: Any, document_type: str) -> dict[str, Any]:
-    """Extract and flatten OCR fields for the requested document type."""
+    """Extract LLM fields from nested extraction, flat objects, or fieldName/value lists."""
+    del document_type
     if llm_output is None:
         logger.warning("LLM output is missing; OCR fields will be empty.")
         return {}
 
-    extracted_data = _document_values_from_mapping(llm_output)
-    document_keys = DOCUMENT_TYPE_KEYS.get(_normalize_document_type(document_type), ("taxInvoice",))
-    invoices = None
-    for document_key in document_keys:
-        invoices = extracted_data.get(document_key)
-        if invoices is not None:
-            break
+    normalized_output = normalize_keys_to_camel(_coerce_mapping(llm_output))
+    extraction = normalized_output.get("extraction")
+    if isinstance(extraction, dict):
+        nested_fields = _fields_from_nested_extraction(extraction)
+        if nested_fields:
+            logger.info("DocsAI output pattern: nested extraction")
+            return nested_fields
 
-    if not isinstance(invoices, list) or not invoices:
-        logger.warning("No OCR extracted_data found for document type: %s", document_type)
+        document_key, records = _first_non_empty_document_list(extraction)
+        if records:
+            return _fields_from_document_records(document_key, records)
+
+    logger.info("DocsAI output pattern: flat document list")
+    document_key, records = _first_non_empty_document_list(normalized_output)
+    if not records:
+        logger.warning("No LLM document data found in DocsAI output.")
         return {}
 
-    if len(invoices) > 1:
-        logger.warning("Multiple OCR records found for document type %s; using the first.", document_type)
-
-    try:
-        first_invoice = invoices[0]
-    except (IndexError, TypeError) as exc:
-        logger.warning("Unable to read first OCR record for document type %s: %s", document_type, exc)
-        return {}
-
-    if not isinstance(first_invoice, dict):
-        logger.warning("OCR extracted_data first item was not an object for document type: %s", document_type)
-        return {}
-
-    return {
-        key: _stringify_field_value(first_invoice.get(key, ""))
-        for key in LLM_EVAL_FIELD_KEYS
-    }
+    return _fields_from_document_records(document_key, records)
 
 
 def extract_llm_line_items(llm_output: Any, document_type: str) -> list[dict[str, Any]]:
-    """Extract line items from the first DocsAI LLM document record."""
+    """Extract line items dynamically from the first DocsAI LLM document record."""
+    del document_type
     if llm_output is None:
         return []
 
-    extracted_data = _document_values_from_mapping(llm_output)
-    document_keys = DOCUMENT_TYPE_KEYS.get(_normalize_document_type(document_type), ("taxInvoice",))
-    invoices = None
-    for document_key in document_keys:
-        invoices = extracted_data.get(document_key)
-        if invoices is not None:
-            break
-
-    if not isinstance(invoices, list) or not invoices or not isinstance(invoices[0], dict):
+    _document_key, records = _first_non_empty_document_list(llm_output)
+    if not records or not isinstance(records[0], dict):
         return []
 
     # TODO: line items comparison next version.
-    line_items = invoices[0].get("lineItems")
+    line_items = normalize_keys_to_camel(records[0]).get("lineItems")
     if not isinstance(line_items, list):
         return []
     return [item for item in line_items if isinstance(item, dict)]
@@ -196,26 +273,38 @@ def _extract_markdown_from_step(step: dict[str, Any], run_id: str) -> str:
     return markdown
 
 
-def _find_llm_output(steps: list[Any]) -> Any:
-    """Find the first LLM extraction output that contains a supported document key."""
-    for step in steps:
-        if not isinstance(step, dict) or step.get("stepType") != "call_llm":
-            continue
-        step_id = str(step.get("stepId", ""))
-        if "extract-fields" not in step_id:
-            continue
-        output_data = _get_output_data(step)
-        llm_response = output_data.get("llm_response")
-        if _contains_extraction_document_key(llm_response):
-            return llm_response
+def _find_llm_output(steps: list[Any]) -> dict[str, Any] | None:
+    """Find the LLM extraction step output while avoiding classification steps.
+
+    Priority 1: nested extraction.extractedFields structure.
+    Priority 2: extract step with flat document list, excluding classification metadata.
+    Priority 3: extract-fields step fallback with usable document data.
+    """
+    priority2: dict[str, Any] | None = None
+    priority3: dict[str, Any] | None = None
 
     for step in steps:
         if not isinstance(step, dict) or step.get("stepType") != "call_llm":
             continue
+
         output_data = _get_output_data(step)
-        llm_response = output_data.get("llm_response")
-        if _contains_extraction_document_key(llm_response):
+        llm_response = _coerce_mapping(output_data.get("llm_response"))
+        if not llm_response:
+            continue
+
+        if _has_nested_extraction_fields(llm_response):
             return llm_response
+
+        step_id = str(step.get("stepId", "")).lower()
+        if "extract" in step_id and priority2 is None and _contains_extraction_document_key(llm_response):
+            priority2 = llm_response
+        if "extract-fields" in step_id and priority3 is None and _contains_extraction_document_key(llm_response):
+            priority3 = llm_response
+
+    selected_output = priority2 or priority3
+    if selected_output is not None:
+        return selected_output
+
     logger.warning("LLM extraction step not found; continuing without llm_output.")
     return None
 
@@ -250,12 +339,8 @@ def _fetch_run_steps_payload(run_id: str) -> list[Any]:
 
 
 def _detected_document_key(llm_output: Any) -> str:
-    """Return the first supported document key detected in LLM output."""
-    mapping = _document_values_from_mapping(llm_output)
-    for key in EXTRACTION_DOCUMENT_KEYS:
-        if key in mapping:
-            return key
-    return ""
+    """Return the first non-empty document key detected in LLM output."""
+    return _first_non_empty_document_list(llm_output)[0]
 
 
 def _trim_json_preview(value: Any, max_string_length: int = 160) -> Any:
