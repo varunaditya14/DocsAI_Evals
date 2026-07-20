@@ -1,422 +1,302 @@
-"""Evaluation routines for OCR markdown and extracted field quality."""
+"""Field-level evaluation routines for DocsAI extraction output."""
 
 from __future__ import annotations
 
-import difflib
 import logging
+import re
 from typing import Any
 
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
-from jiwer import cer, wer
 from openai import AzureOpenAI
 from rapidfuzz import fuzz
 
 from backend.config import get_settings
+from backend.field_entry_validator import sanitize_field_value
 
 
 logger = logging.getLogger(__name__)
 AZURE_COGNITIVE_SERVICES_SCOPE = "https://cognitiveservices.azure.com/.default"
 
-
-def run_difflib(golden_md: str, ocr_md: str) -> dict[str, Any]:
-    """Compare markdown line by line and return missing and added lines."""
-    golden_lines = golden_md.splitlines()
-    ocr_lines = ocr_md.splitlines()
-    diff = difflib.unified_diff(
-        golden_lines,
-        ocr_lines,
-        lineterm="",
-    )
-    missing_lines: list[str] = []
-    added_lines: list[str] = []
-
-    for line in diff:
-        if line.startswith(("---", "+++", "@@")):
-            continue
-        if line.startswith("-"):
-            missing_lines.append(line[1:])
-        elif line.startswith("+"):
-            added_lines.append(line[1:])
-
-    return {
-        "missing_lines": missing_lines,
-        "added_lines": added_lines,
-        "total_missing": len(missing_lines),
-        "total_added": len(added_lines),
-        "total_golden_lines": len([line for line in golden_lines if line.strip()]),
-        "total_ocr_lines": len([line for line in ocr_lines if line.strip()]),
-    }
-
-
-def run_jiwer_on_markdown(golden_markdown: str, ocr_markdown: str) -> dict[str, Any]:
-    """Calculate overall and line-level CER/WER between golden and OCR markdown text."""
-    golden_lines = [line for line in golden_markdown.splitlines() if line.strip()]
-    ocr_lines = [line for line in ocr_markdown.splitlines() if line.strip()]
-    available_ocr_lines = list(ocr_lines)
-    line_results: list[dict[str, Any]] = []
-
-    for index, golden_line in enumerate(golden_lines, start=1):
-        if available_ocr_lines:
-            matches = difflib.get_close_matches(golden_line, available_ocr_lines, n=1, cutoff=0)
-            ocr_line = matches[0] if matches else ""
-            if ocr_line in available_ocr_lines:
-                available_ocr_lines.remove(ocr_line)
-        else:
-            ocr_line = ""
-
-        line_results.append(
-            {
-                "line_number": index,
-                "golden_line": golden_line,
-                "ocr_line": ocr_line,
-                "cer": round(cer(golden_line, ocr_line), 4),
-                "wer": round(wer(golden_line, ocr_line), 4),
-            }
-        )
-
-    return {
-        "overall_cer": round(cer(golden_markdown, ocr_markdown), 4),
-        "overall_wer": round(wer(golden_markdown, ocr_markdown), 4),
-        "line_results": line_results,
-    }
-
-
-def run_rapidfuzz_on_markdown(golden_markdown: str, ocr_markdown: str) -> dict[str, Any]:
-    """Calculate whole-document fuzzy similarity for OCR markdown text."""
-    overall_score = round(float(fuzz.ratio(golden_markdown, ocr_markdown)), 4)
-    token_sort_score = round(float(fuzz.token_sort_ratio(golden_markdown, ocr_markdown)), 4)
-    if overall_score >= 90:
-        status = "PASS"
-    elif overall_score < 70:
-        status = "FAIL"
-    else:
-        status = "GREY"
-
-    return {
-        "overall_score": overall_score,
-        "token_sort_score": token_sort_score,
-        "status": status,
-    }
-
-
-def calculate_ocr_markdown_score(
-    diff_result: dict[str, Any],
-    jiwer_result: dict[str, Any],
-    fuzz_result: dict[str, Any],
-) -> dict[str, float]:
-    """Calculate composite OCR quality scores from markdown diff, CER, and fuzzy similarity."""
-    total_golden_lines = max(int(diff_result.get("total_golden_lines") or 0), 1)
-    missing_added = int(diff_result.get("total_missing") or 0) + int(diff_result.get("total_added") or 0)
-    structural_score = max(0.0, 1 - (missing_added / total_golden_lines))
-    text_accuracy_score = max(0.0, 1 - float(jiwer_result.get("overall_cer") or 0))
-    similarity_score = max(0.0, min(1.0, float(fuzz_result.get("overall_score") or 0) / 100))
-    composite_score = (structural_score + text_accuracy_score + similarity_score) / 3
-
-    return {
-        "structural_score": round(structural_score, 4),
-        "text_accuracy_score": round(text_accuracy_score, 4),
-        "similarity_score": round(similarity_score, 4),
-        "composite_score": round(composite_score, 4),
-    }
-
-
-def run_jiwer_per_field(
-    golden_fields: dict[str, Any], ocr_fields: dict[str, Any]
-) -> dict[str, dict[str, Any]]:
-    """Calculate per-field CER and WER between golden and extracted values."""
-    results: dict[str, dict[str, Any]] = {}
-
-    for field, golden_value in golden_fields.items():
-        extracted_value = ocr_fields.get(field, "")
-        golden_text = "" if golden_value is None else str(golden_value)
-        extracted_text = "" if extracted_value is None else str(extracted_value)
-        if golden_text == "" or extracted_text == "":
-            cer_score = 1.0
-            wer_score = 1.0
-        else:
-            cer_score = round(cer(golden_text, extracted_text), 4)
-            wer_score = round(wer(golden_text, extracted_text), 4)
-        results[field] = {
-            "golden": golden_text,
-            "extracted": extracted_text,
-            "cer": cer_score,
-            "wer": wer_score,
-        }
-
-    return results
-
-
-def _as_float(value: Any) -> float | None:
-    """Convert a value to float after whitespace stripping, or return None."""
-    try:
-        return float(str(value).strip())
-    except (TypeError, ValueError):
-        return None
-
-
-def _field_type_for(field: str, field_types: dict[str, Any]) -> str:
-    """Return normalized field type for a field."""
-    return str(field_types.get(field, "text")).strip().lower()
-
-
-def run_rapidfuzz_per_field(
-    golden_fields: dict[str, Any],
-    ocr_fields: dict[str, Any],
-    field_types: dict[str, Any],
-) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
-    """Evaluate fields using type-aware exact and fuzzy matching."""
-    results: dict[str, dict[str, Any]] = {}
-    grey_zone: list[dict[str, Any]] = []
-
-    for field, golden_value in golden_fields.items():
-        extracted_value = ocr_fields.get(field)
-        field_type = _field_type_for(field, field_types)
-        golden_text = "" if golden_value is None else str(golden_value)
-        extracted_text = "" if extracted_value is None else str(extracted_value)
-        llm_judgde_status: bool = False
-
-        if extracted_text == "" and golden_text != "":
-            status = "FN"
-            score: float | None = None
-        elif extracted_text == "" and golden_text == "":
-            status = "TP"
-            score = 100.0
-        elif field_type == "numeric":
-            golden_float = _as_float(golden_value)
-            extracted_float = _as_float(extracted_value)
-            status = (
-                "TP"
-                if golden_float is not None
-                and extracted_float is not None
-                and golden_float == extracted_float
-                else "FP"
-            )
-            score = 100.0 if status == "TP" else 0.0
-        elif field_type == "date":
-            status = "TP" if golden_text.strip() == extracted_text.strip() else "FP"
-            score = 100.0 if status == "TP" else 0.0
-        else:
-            score = round(float(fuzz.ratio(golden_text, extracted_text)), 4)
-            if score >= 90:
-                status = "TP"
-            elif score < 70:
-                status = "FP"
-            else:
-                status = "GREY"
-                llm_judgde_status = True
-                grey_zone.append(
-                    {
-                        "field": field,
-                        "golden": golden_text,
-                        "extracted": extracted_text,
-                        "score": score,
-                    }
-                )
-
-        results[field] = {
-            "golden": golden_text,
-            "extracted": extracted_text,
-            "field_type": field_type,
-            "score": score,
-            "status": status,
-            "llm_judged": llm_judgde_status,
-        }
-
-    return results, grey_zone
+FIELD_DESCRIPTIONS = {
+    "invoiceNo": "invoice number in the document header",
+    "invoiceNumber": "invoice number in the document header",
+    "date": "invoice or document date in the header",
+    "invoiceDate": "invoice date in the document header",
+    "poNo": "purchase order number in the document header",
+    "billTo": "billing address block",
+    "deliveryTo": "delivery address block",
+    "clientId": "client identifier code",
+    "terms": "payment terms in the header",
+    "sales": "sales person name",
+    "rqNo": "requisition number",
+    "totalAmount": "total amount in the totals section",
+    "gstAmount": "GST or tax amount in the totals section",
+    "amountDue": "final amount due in the totals section",
+    "fullName": "full name of the document holder",
+    "documentNumber": "document identification number",
+    "passportNo": "passport number",
+    "dateOfBirth": "date of birth",
+    "nationality": "nationality of the document holder",
+    "gender": "gender of the document holder",
+    "issueDate": "date of issue",
+    "expiryDate": "date of expiry or expiration",
+}
 
 
 def _safe_error_message(exc: Exception) -> str:
-    """Return a short error message without credential-like detail."""
+    """Return a short error message without leaking credential-like detail."""
     message = str(exc).replace("\n", " ").strip()
     return message[:240] if message else exc.__class__.__name__
 
 
-def _build_azure_openai_client() -> AzureOpenAI | None:
-    """Build an Azure OpenAI client lazily using DefaultAzureCredential."""
-    try:
-        settings = get_settings()
-    except Exception as exc:
-        logger.error("Azure OpenAI settings could not be loaded: %s", _safe_error_message(exc))
-        return None
-
+def _azure_client_and_deployment() -> tuple[AzureOpenAI, str]:
+    """Build an Azure OpenAI client and return it with the configured deployment."""
+    settings = get_settings()
     if not settings.azure_openai_configured:
-        logger.warning("Azure OpenAI judge not configured.")
-        return None
+        raise RuntimeError("Azure OpenAI is not configured.")
 
-    try:
-        credential = DefaultAzureCredential()
-        token_provider = get_bearer_token_provider(credential, AZURE_COGNITIVE_SERVICES_SCOPE)
-        return AzureOpenAI(
-            azure_endpoint=settings.azure_openai_endpoint,
-            api_version=settings.azure_openai_api_version,
-            azure_ad_token_provider=token_provider,
-        )
-    except Exception as exc:
-        logger.error("Azure OpenAI client creation failed: %s", _safe_error_message(exc))
-        return None
-
-
-def llm_grey_zone_judge(field: str, golden_val: Any, extracted_val: Any) -> tuple[str, str | None]:
-    """Use Azure OpenAI to decide whether two grey-zone values match semantically."""
-    try:
-        settings = get_settings()
-        if not settings.azure_openai_configured:
-            return "UNRESOLVED", "Azure OpenAI judge not configured"
-
-        client = _build_azure_openai_client()
-        if client is None:
-            return "UNRESOLVED", "Azure OpenAI judge not configured"
-
-        prompt = (
-            "Answer only YES or NO.\n"
-            f"Field: {field}\n"
-            f"Golden value: {golden_val}\n"
-            f"Extracted value: {extracted_val}\n"
-            "Do these refer to the same thing semantically?"
-        )
-        response = client.chat.completions.create(
-            model=settings.azure_openai_deployment,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            timeout=10,
-        )
-
-        response_text = response.choices[0].message.content if response.choices else ""
-
-        normalized = response_text.strip().upper()
-        if normalized.startswith("YES"):
-            return "TP", None
-        if normalized.startswith("NO"):
-            return "FP", None
-        logger.error("Azure OpenAI returned an unexpected grey-zone answer for %s: %s", field, response_text)
-        return "UNRESOLVED", "Azure OpenAI judge failed: unexpected response"
-    except Exception as exc:
-        reason = f"Azure OpenAI judge failed: {_safe_error_message(exc)}"
-        logger.error("Azure OpenAI grey-zone judge failed for field %s: %s", field, _safe_error_message(exc))
-        return "UNRESOLVED", reason
-
-
-def resolve_grey_zone(
-    results: dict[str, dict[str, Any]], grey_zone: list[dict[str, Any]]
-) -> dict[str, dict[str, Any]]:
-    """Resolve grey-zone field results using the LLM semantic judge."""
-    for item in grey_zone:
-        field = item["field"]
-        status, reason = llm_grey_zone_judge(field, item["golden"], item["extracted"])
-        if status == "UNRESOLVED":
-            results[field]["status"] = "UNRESOLVED"
-            results[field]["llm_judged"] = False
-            results[field]["llm_error"] = True
-            results[field]["llm_reason"] = reason
-        else:
-            results[field]["status"] = status
-            results[field]["llm_judged"] = True
-    return results
-
-
-def calculate_f1(field_results: dict[str, dict[str, Any]]) -> dict[str, float | int]:
-    """Calculate precision, recall, and F1 from field-level statuses."""
-    tp = sum(1 for result in field_results.values() if result.get("status") == "TP")
-    fp = sum(1 for result in field_results.values() if result.get("status") == "FP")
-    fn = sum(1 for result in field_results.values() if result.get("status") == "FN")
-    unresolved_count = sum(
-        1 for result in field_results.values() if result.get("status") == "UNRESOLVED"
+    credential = DefaultAzureCredential()
+    token_provider = get_bearer_token_provider(credential, AZURE_COGNITIVE_SERVICES_SCOPE)
+    client = AzureOpenAI(
+        azure_endpoint=settings.azure_openai_endpoint,
+        api_version=settings.azure_openai_api_version,
+        azure_ad_token_provider=token_provider,
     )
-
-    precision = tp / (tp + fp) if tp + fp else 0.0
-    recall = tp / (tp + fn) if tp + fn else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-
-    return {
-        "tp": tp,
-        "fp": fp,
-        "fn": fn,
-        "unresolved_count": unresolved_count,
-        "precision": round(precision, 4),
-        "recall": round(recall, 4),
-        "f1": round(f1, 4),
-    }
+    return client, settings.azure_openai_deployment
 
 
-def run_llm_field_comparison(
+def _parse_numeric(value: Any) -> float:
+    """Parse a numeric field after removing grouping separators and currency text."""
+    text = sanitize_field_value(value)
+    cleaned = re.sub(r"[^0-9.\-]", "", text.replace(",", ""))
+    if cleaned in {"", "-", ".", "-."}:
+        raise ValueError("not numeric")
+    return float(cleaned)
+
+
+def _field_type_for(field: str, field_types: dict[str, Any]) -> str:
+    """Return the normalized comparison type for a field."""
+    return str(field_types.get(field, "text")).strip().lower() or "text"
+
+
+def run_field_comparison(
     golden_fields: dict[str, Any],
-    llm_fields: dict[str, Any],
+    extracted_fields: dict[str, Any],
     field_types: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
-    """Compare expected GDS fields against DocsAI LLM extracted fields."""
+    """Compare user-entered golden fields against DocsAI extracted fields."""
     results: dict[str, dict[str, Any]] = {}
 
     for field, golden_value in golden_fields.items():
-        extracted_value = llm_fields.get(field)
+        golden_val = sanitize_field_value(golden_value)
+        extracted_val = sanitize_field_value(extracted_fields.get(field, ""))
         field_type = _field_type_for(field, field_types)
-        golden_text = "" if golden_value is None else str(golden_value)
-        extracted_text = "" if extracted_value is None else str(extracted_value)
-        score: float | None = None
+        score: float | None
 
-        if field not in llm_fields or extracted_text.strip() == "":
+        if extracted_val == "":
             status = "FN"
+            score = 0
+        elif golden_val == "":
+            status = "EXTRA_INFO"
+            score = None
         elif field_type == "date":
-            status = "TP" if golden_text.strip() == extracted_text.strip() else "FP"
+            status = "TP" if golden_val == extracted_val else "FP"
+            score = 100 if status == "TP" else 0
         elif field_type == "numeric":
-            golden_float = _as_float(golden_text)
-            extracted_float = _as_float(extracted_text)
-            status = (
-                "TP"
-                if golden_float is not None
-                and extracted_float is not None
-                and golden_float == extracted_float
-                else "FP"
-            )
+            try:
+                status = "TP" if _parse_numeric(golden_val) == _parse_numeric(extracted_val) else "FP"
+            except ValueError:
+                status = "FP"
+            score = 100 if status == "TP" else 0
         else:
-            score = round(float(fuzz.ratio(golden_text, extracted_text)), 4)
+            score = round(float(fuzz.ratio(golden_val, extracted_val)), 2)
             if score >= 90:
                 status = "TP"
             elif score < 70:
                 status = "FP"
             else:
-                # GREY zone LLM judge intentionally skipped.
                 status = "GREY"
 
         results[field] = {
             "status": status,
-            "golden_value": golden_text,
-            "extracted_value": extracted_text,
+            "golden_value": golden_val,
+            "extracted_value": extracted_val,
             "score": score,
             "field_type": field_type,
+            "llm_judge": None,
+            "ocr_search": None,
         }
 
-    for field, extracted_value in llm_fields.items():
+    for field, extracted_value in extracted_fields.items():
         if field in golden_fields:
             continue
-        field_type = _field_type_for(field, field_types)
         results[field] = {
-            "status": "FP",
+            "status": "EXTRA",
             "golden_value": "",
-            "extracted_value": "" if extracted_value is None else str(extracted_value),
+            "extracted_value": sanitize_field_value(extracted_value),
             "score": None,
-            "field_type": field_type,
+            "field_type": _field_type_for(field, field_types),
+            "llm_judge": None,
+            "ocr_search": None,
         }
 
     return results
 
 
-def calculate_llm_f1(llm_field_results: dict[str, dict[str, Any]]) -> dict[str, float | int]:
-    """Calculate LLM precision, recall, F1, and grey count from field statuses."""
-    tp = sum(1 for result in llm_field_results.values() if result.get("status") == "TP")
-    fp = sum(1 for result in llm_field_results.values() if result.get("status") == "FP")
-    fn = sum(1 for result in llm_field_results.values() if result.get("status") == "FN")
-    grey_count = sum(1 for result in llm_field_results.values() if result.get("status") == "GREY")
+def llm_semantic_judge(
+    field_name: str,
+    golden_value: str,
+    extracted_value: str,
+    field_type: str,
+) -> dict[str, Any]:
+    """Ask Azure OpenAI whether two grey-zone field values match semantically."""
+    try:
+        client, deployment = _azure_client_and_deployment()
+        prompt = (
+            "You are evaluating a document extraction system.\n\n"
+            f"Field: {field_name}\n"
+            f"Field type: {field_type}\n"
+            f"Expected value: {golden_value}\n"
+            f"Extracted value: {extracted_value}\n\n"
+            "Do these two values represent the same information?\n"
+            "Consider: minor formatting differences, abbreviations,\n"
+            "equivalent representations (e.g. same date in different\n"
+            "formats, same name with/without punctuation).\n\n"
+            "Reply with exactly:\n"
+            "PASS if they match semantically\n"
+            "FAIL if they are genuinely different\n\n"
+            "Then on a new line, one sentence explaining why."
+        )
+        response = client.chat.completions.create(
+            model=deployment,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            timeout=15,
+        )
+        response_text = response.choices[0].message.content if response.choices else ""
+        lines = [line.strip() for line in response_text.splitlines() if line.strip()]
+        verdict = lines[0].upper() if lines else "FAIL"
+        if verdict not in {"PASS", "FAIL"}:
+            verdict = "FAIL"
+        reason = lines[1] if len(lines) > 1 else "The judge did not provide a separate reason."
+        return {"verdict": verdict, "reason": reason, "llm_error": False}
+    except Exception as exc:
+        logger.error("LLM semantic judge failed for %s: %s", field_name, _safe_error_message(exc))
+        return {"verdict": "UNCERTAIN", "reason": "LLM judge unavailable", "llm_error": True}
 
-    precision = tp / (tp + fp) if tp + fp else 0.0
-    recall = tp / (tp + fn) if tp + fn else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
 
-    return {
-        "tp": tp,
-        "fp": fp,
-        "fn": fn,
-        "grey_count": grey_count,
-        "precision": round(precision, 4),
-        "recall": round(recall, 4),
-        "f1": round(f1, 4),
-    }
+def _exact_occurrence_contexts(markdown: str, needle: str) -> tuple[int, list[str]]:
+    """Find exact case-insensitive occurrences and return nearby line contexts."""
+    if not needle:
+        return 0, []
+    lines = markdown.splitlines()
+    lowered_needle = needle.lower()
+    contexts: list[str] = []
+    occurrence_count = 0
+    for index, line in enumerate(lines):
+        matches_in_line = line.lower().count(lowered_needle)
+        if matches_in_line == 0:
+            continue
+        occurrence_count += matches_in_line
+        start = max(0, index - 3)
+        end = min(len(lines), index + 4)
+        context = "\n".join(f"{line_number + 1}: {lines[line_number]}" for line_number in range(start, end))
+        contexts.append(context)
+    return occurrence_count, contexts
+
+
+def _fuzzy_token_contexts(markdown: str, value: str) -> tuple[int, list[str]]:
+    """Find line windows where all expected value tokens appear near each other."""
+    tokens = [token.lower() for token in re.findall(r"[A-Za-z0-9]+", value)]
+    if not tokens:
+        return 0, []
+    lines = markdown.splitlines()
+    contexts: list[str] = []
+    seen: set[tuple[int, int]] = set()
+    for index in range(len(lines)):
+        start = max(0, index - 3)
+        end = min(len(lines), index + 4)
+        window = "\n".join(lines[start:end]).lower()
+        if all(token in window for token in tokens):
+            key = (start, end)
+            if key in seen:
+                continue
+            seen.add(key)
+            contexts.append("\n".join(f"{line_number + 1}: {lines[line_number]}" for line_number in range(start, end)))
+    return len(contexts), contexts
+
+
+def _format_contexts(contexts: list[str]) -> str:
+    """Format OCR search contexts for the LLM prompt."""
+    return "\n\n".join(f"Context {index}:\n{context}" for index, context in enumerate(contexts, start=1))
+
+
+def llm_ocr_searcher(field_name: str, golden_value: str, ocr_markdown: str) -> dict[str, Any]:
+    """Diagnose whether a failed field is a prompt problem or OCR limitation."""
+    try:
+        normalized_markdown = sanitize_field_value(ocr_markdown)
+        normalized_value = sanitize_field_value(golden_value)
+        occurrence_count, contexts = _exact_occurrence_contexts(normalized_markdown, normalized_value)
+
+        if occurrence_count == 0:
+            fuzzy_count, fuzzy_contexts = _fuzzy_token_contexts(normalized_markdown, normalized_value)
+            occurrence_count = fuzzy_count
+            contexts = fuzzy_contexts
+
+        if occurrence_count == 0:
+            preliminary = "likely_ocr_fail"
+        elif occurrence_count == 1:
+            preliminary = "likely_prompt_problem"
+        else:
+            preliminary = "ambiguous"
+
+        client, deployment = _azure_client_and_deployment()
+        field_desc = FIELD_DESCRIPTIONS.get(field_name, f"a field named {field_name} somewhere in the document")
+        contexts_text = _format_contexts(contexts)
+        prompt = (
+            "You are evaluating a document extraction system.\n\n"
+            f"Field: {field_name}\n"
+            f"Description: {field_desc}\n"
+            f"Expected value: {golden_value}\n\n"
+            "The value was searched in the OCR markdown.\n"
+            f"{occurrence_count} occurrence(s) found.\n\n"
+            "Contexts found (each shows surrounding lines):\n"
+            f"{contexts_text if contexts else 'No occurrences found.'}\n\n"
+            "Task: Is the expected value present in the OCR markdown\n"
+            "in the correct context for this field?\n\n"
+            "Reply with exactly one of:\n"
+            "PROMPT_PROBLEM - value is present in correct context,\n"
+            "LLM extraction failed to pick it up\n"
+            "OCR_LIMITATION - value is not in the markdown or not in\n"
+            "any correct context, OCR did not extract it\n"
+            "UNCERTAIN - cannot determine with confidence\n\n"
+            "Then on a new line, one sentence explaining why."
+        )
+        response = client.chat.completions.create(
+            model=deployment,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            timeout=15,
+        )
+        response_text = response.choices[0].message.content if response.choices else ""
+        lines = [line.strip() for line in response_text.splitlines() if line.strip()]
+        verdict = lines[0].upper().replace("\u2014", "-").split()[0] if lines else "UNCERTAIN"
+        if verdict not in {"PROMPT_PROBLEM", "OCR_LIMITATION", "UNCERTAIN"}:
+            verdict = "UNCERTAIN"
+        reason = lines[1] if len(lines) > 1 else "The searcher did not provide a separate reason."
+        return {
+            "verdict": verdict,
+            "reason": reason,
+            "occurrence_count": occurrence_count,
+            "preliminary": preliminary,
+            "llm_error": False,
+        }
+    except Exception as exc:
+        logger.error("LLM OCR searcher failed for %s: %s", field_name, _safe_error_message(exc))
+        return {
+            "verdict": "UNCERTAIN",
+            "reason": "LLM searcher unavailable",
+            "occurrence_count": 0,
+            "preliminary": "unknown",
+            "llm_error": True,
+        }

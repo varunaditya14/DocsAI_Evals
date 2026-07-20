@@ -4,21 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DocsAI Evals Portal</title>
-    <link rel="stylesheet" href="/assets/styles.css?v=20260702-dynamic-schema-percent-metrics" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260720-centered-run-flow" />
   </head>
   <body>
     <header class="topbar">
       <div class="brand">
-        <div class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24">
-            <path d="M7 3h7l5 5v13H7z" />
-            <path d="M14 3v6h5" />
-            <path d="M10 13h6M10 17h4" />
-          </svg>
-        </div>
+        <div class="brand-mark" aria-hidden="true"><span class="ti ti-file"></span></div>
         <div>
           <strong>DocsAI Evals</strong>
-          <span>OCR quality monitoring</span>
+          <span>Field extraction evaluation</span>
         </div>
       </div>
       <div class="top-actions">
@@ -31,69 +25,54 @@
     <div class="app-shell">
       <aside class="sidebar" aria-label="Main navigation">
         <button class="nav-item active" type="button" data-section="dashboard" title="Dashboard" aria-label="Dashboard">
-          <svg viewBox="0 0 24 24"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z" /></svg>
-        </button>
-        <button class="nav-item" type="button" data-section="golden" title="Golden Dataset" aria-label="Golden Dataset">
-          <svg viewBox="0 0 24 24"><path d="M5 20h14M12 16V4M7 9l5-5 5 5" /></svg>
+          <span class="ti ti-dashboard"></span>
         </button>
         <button class="nav-item" type="button" data-section="run" title="Run Evaluation" aria-label="Run Evaluation">
-          <svg viewBox="0 0 24 24"><path d="m6 4 14 8-14 8z" /></svg>
+          <span class="ti ti-play"></span>
         </button>
         <button class="nav-item" type="button" data-section="history" title="Run History" aria-label="Run History">
-          <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v6h6M12 7v6l4 2" /></svg>
+          <span class="ti ti-history"></span>
         </button>
         <button class="nav-item" type="button" data-section="reports" title="Reports" aria-label="Reports">
-          <svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z" /><path d="M9 13h6M9 17h5M15 3v4h4" /></svg>
+          <span class="ti ti-report"></span>
         </button>
         <button class="nav-item" type="button" data-section="settings" title="Settings and Health" aria-label="Settings and Health">
-          <svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z" /><path d="M3 12h3M18 12h3M12 3v3M12 18v3" /></svg>
+          <span class="ti ti-settings"></span>
         </button>
       </aside>
 
       <main class="content">
         <section id="dashboard" class="view active">
           <div class="page-heading">
-            <div class="heading-icon"><svg viewBox="0 0 24 24"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z" /></svg></div>
+            <div class="heading-icon"><span class="ti ti-dashboard"></span></div>
             <div>
-              <h1>OCR Evaluation Dashboard</h1>
-              <p>Monitor DocsAI OCR and LLM extraction quality</p>
+              <h1>Evaluation Dashboard</h1>
+              <p>Monitor field-level DocsAI extraction quality</p>
             </div>
           </div>
 
           <div id="dashboardError" class="banner error" hidden></div>
 
           <section class="summary-grid" aria-label="Summary cards">
-            <article class="stat-card">
-              <span>Total Runs</span>
-              <strong id="totalRuns">0</strong>
-            </article>
-            <article class="stat-card">
-              <span>Average score</span>
-              <strong id="averageF1">0.0%</strong>
-            </article>
-            <article class="stat-card">
-              <span>Average coverage</span>
-              <strong id="averageRecall">0.0%</strong>
-            </article>
-            <article class="stat-card">
-              <span>Worst Performing Field</span>
-              <strong id="worstField">-</strong>
-            </article>
+            <article class="stat-card"><span>Total Runs</span><strong id="totalRuns">0</strong></article>
+            <article class="stat-card"><span>Average F1</span><strong id="averageF1">0.0%</strong></article>
+            <article class="stat-card"><span>Prompt Problems</span><strong id="promptProblems">0</strong></article>
+            <article class="stat-card"><span>OCR Limitations</span><strong id="ocrLimitations">0</strong></article>
           </section>
 
           <section class="card">
             <div class="section-title">
               <div>
-                <h2>Latest Scores</h2>
+                <h2>Latest Run</h2>
                 <p id="latestReportLabel">No report selected</p>
               </div>
               <span id="dashboardHealthPill" class="status-pill partial">CHECKING</span>
             </div>
             <div class="score-grid">
-              <div class="score-card"><span>Accuracy</span><strong id="latestPrecision">-</strong></div>
-              <div class="score-card"><span>Coverage</span><strong id="latestRecall">-</strong></div>
-              <div class="score-card"><span>Overall score</span><strong id="latestF1">-</strong></div>
-              <div class="score-card"><span>Missing Lines</span><strong id="latestMissing">-</strong></div>
+              <div class="score-card"><span>Precision</span><strong id="latestPrecision">-</strong></div>
+              <div class="score-card"><span>Recall</span><strong id="latestRecall">-</strong></div>
+              <div class="score-card"><span>F1</span><strong id="latestF1">-</strong></div>
+              <div class="score-card"><span>Missing</span><strong id="latestMissing">-</strong></div>
             </div>
           </section>
 
@@ -101,7 +80,7 @@
             <div class="section-title">
               <div>
                 <h2>Recent Reports</h2>
-                <p>Latest saved OCR evaluation runs</p>
+                <p>Latest saved field evaluation runs</p>
               </div>
               <button class="secondary-button" type="button" data-section-jump="history">View History</button>
             </div>
@@ -109,11 +88,12 @@
               <table>
                 <thead>
                   <tr>
-                    <th>Report Name</th>
-                    <th>Run ID</th>
                     <th>Filename</th>
-                    <th>Overall score</th>
-                    <th>Status</th>
+                    <th>Document Type</th>
+                    <th>F1</th>
+                    <th>Passed</th>
+                    <th>Failed</th>
+                    <th>Missing</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
@@ -123,45 +103,12 @@
           </section>
         </section>
 
-        <section id="golden" class="view">
-          <div class="page-heading">
-            <div class="heading-icon"><svg viewBox="0 0 24 24"><path d="M5 20h14M12 16V4M7 9l5-5 5 5" /></svg></div>
-            <div>
-              <h1>Golden Dataset</h1>
-              <p>Upload the JSONL reference dataset used for OCR evaluation</p>
-            </div>
-          </div>
-
-          <form id="goldenForm" class="upload-card">
-            <div class="section-title">
-              <div>
-                <h2>Upload Golden Dataset</h2>
-                <p>Supported format: JSONL only</p>
-              </div>
-              <span id="goldenStatus" class="status-pill partial">PENDING</span>
-            </div>
-            <label id="dropzone" class="dropzone" for="goldenFile">
-              <input id="goldenFile" type="file"/>
-              <span class="drop-icon"><svg viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M5 20h14" /></svg></span>
-              <strong id="goldenFileName">Drag and drop your JSONL file here</strong>
-              <span>or browse from your computer</span>
-              <button class="secondary-button" type="button" id="browseGolden">Browse File</button>
-            </label>
-            <div class="meta-row">
-              <span>Current file</span>
-              <strong id="currentGdsFile">No upload in this session</strong>
-            </div>
-            <div id="goldenMessage" class="banner" hidden></div>
-            <button id="uploadGoldenButton" class="primary-button" type="submit">Upload Dataset</button>
-          </form>
-        </section>
-
         <section id="run" class="view">
           <div class="page-heading">
-            <div class="heading-icon"><svg viewBox="0 0 24 24"><path d="m6 4 14 8-14 8z" /></svg></div>
+            <div class="heading-icon"><span class="ti ti-play"></span></div>
             <div>
               <h1>Run Evaluation</h1>
-              <p>Execute an OCR evaluation for a DocsAI run</p>
+              <p>Enter a DocsAI run ID, load extracted fields, then add camelCase schema fields and golden values</p>
             </div>
           </div>
 
@@ -169,34 +116,54 @@
             <form id="evalForm" class="card form-card">
               <div class="section-title">
                 <div>
-                  <h2>Evaluation Input</h2>
-                  <p>Provide the DocsAI run and matching GDS filename</p>
+                  <h2>DocsAI Run</h2>
+                  <p>DocsAI authentication and run output retrieval use the existing backend connection</p>
                 </div>
-                <span id="runStatus" class="status-pill partial">READY</span>
+                <span id="runStatus" class="status-pill ready">READY</span>
               </div>
+
               <label class="field">
                 <span>DocsAI Run ID</span>
-                <input id="runId" type="text" placeholder="run-..." required />
+                <div class="input-action-row">
+                  <input id="runId" type="text" placeholder="run-..." autocomplete="off" />
+                  <button id="loadFieldsButton" class="secondary-button" type="button">Load run fields</button>
+                </div>
               </label>
-              <label class="field">
-                <span>GDS Filename</span>
-                <input id="filename" type="text" placeholder="invoice.pdf" required />
-              </label>
-              <label class="field">
-                <span>Document Type</span>
-                <select id="documentType">
-                  <option value="">Read from golden dataset</option>
-                  <option value="taxInvoice">Tax Invoice</option>
-                  <option value="purchaseOrder">Purchase Order</option>
-                  <option value="proformaInvoice">Proforma Invoice</option>
-                </select>
-              </label>
-              <div id="runMessage" class="banner" hidden></div>
-              <button id="runButton" class="primary-button" type="submit">Run Evaluation</button>
-              <div class="debug-actions">
-                <button id="testOcrOnly" class="debug-link" type="button">Test OCR Only</button>
-                <button id="testLlmOnly" class="debug-link" type="button">Test LLM Only</button>
+
+              <div id="runFieldsMessage" class="banner" hidden></div>
+              <div id="restorePrompt" class="restore-prompt" hidden>
+                <span>Restore previous values for this run?</span>
+                <button id="restoreYes" type="button">Yes</button>
+                <button id="restoreNo" type="button">No</button>
               </div>
+
+              <section id="detectedPanel" class="detected-panel" hidden>
+                <div><span>Detected document type</span><strong id="detectedDocType">-</strong></div>
+                <div><span>Extracted field count</span><strong id="detectedFieldCount">0</strong></div>
+              </section>
+
+              <section class="expected-section">
+                <div class="section-title compact">
+                  <div>
+                    <h2>Expected fields schema and golden values</h2>
+                    <p>Enter camelCase field names and the golden value to compare with DocsAI output (e.g. invoiceNo, dateOfBirth)</p>
+                  </div>
+                </div>
+                <div id="fieldRows" class="field-entry-list"></div>
+                <button id="addFieldButton" class="secondary-button inline-icon" type="button">
+                  <span class="ti ti-plus" aria-hidden="true"></span>
+                  Add field
+                </button>
+              </section>
+
+              <details id="extractedHintsPanel" class="hint-panel" hidden>
+                <summary>DocsAI extracted these fields - click to pre-fill names</summary>
+                <div id="extractedFieldPills" class="pill-list"></div>
+              </details>
+
+              <div id="runMessage" class="banner" hidden></div>
+              <div id="progressText" class="progress-text" hidden>Fetching run output...</div>
+              <button id="runButton" class="primary-button" type="submit" disabled>Run Evaluation</button>
             </form>
 
             <section class="card result-card">
@@ -205,64 +172,62 @@
                   <h2>Result Summary</h2>
                   <p id="resultSubtitle">Waiting for evaluation</p>
                 </div>
-                <span id="resultStatus" class="status-pill partial">PARTIAL</span>
+                <span id="resultStatus" class="status-pill partial">PENDING</span>
               </div>
-              <dl class="result-list">
+              <dl class="result-list compact">
                 <div><dt>Run ID</dt><dd id="resultRunId">-</dd></div>
-                <div><dt>Filename</dt><dd id="resultFilename">-</dd></div>
+                <div><dt>Document Type</dt><dd id="resultDocumentType">-</dd></div>
               </dl>
-              <div class="run-output-grid">
-                <article class="run-output-card combined-output">
-                  <span>Overall score</span>
+              <div class="report-metric-list">
+                <article class="report-metric-card combined-output">
+                  <span>Total summary</span>
                   <strong id="resultF1">-</strong>
-                  <small>Accuracy <b id="resultPrecision">-</b> / Coverage <b id="resultRecall">-</b></small>
+                  <small>Precision <b id="resultPrecision">-</b> / Recall <b id="resultRecall">-</b></small>
                 </article>
-                <article class="run-output-card">
-                  <span>OCR quality</span>
-                  <strong id="resultOcrF1">-</strong>
-                  <small>Character accuracy <b id="resultOcrPrecision">-</b> / Content similarity <b id="resultOcrRecall">-</b></small>
+                <article class="report-metric-card">
+                  <span>Pass / Fail / Uncertain counts</span>
+                  <strong><b id="resultPassed">-</b> / <b id="resultFailed">-</b> / <b id="resultUncertain">-</b></strong>
+                  <small>Missing fields <b id="resultMissing">-</b></small>
                 </article>
-                <article class="run-output-card">
-                  <span>Extraction score</span>
-                  <strong id="resultLlmF1">-</strong>
-                  <small>Accuracy <b id="resultLlmPrecision">-</b> / Coverage <b id="resultLlmRecall">-</b></small>
+                <article class="report-metric-card">
+                  <span>LLM Judge decisions</span>
+                  <strong id="resultLlmDecisions">-</strong>
+                  <small>Semantic judge resolutions</small>
+                </article>
+                <article class="report-metric-card">
+                  <span>Field-wise scores</span>
+                  <strong id="resultFieldScores">-</strong>
+                  <small>Fields evaluated in this run</small>
+                </article>
+                <article class="report-metric-card">
+                  <span>OCR vs LLM Judge insights</span>
+                  <strong><b id="resultPromptProblems">-</b> / <b id="resultOcrLimitations">-</b></strong>
+                  <small>Prompt problems / OCR limitations</small>
+                </article>
+                <article class="report-metric-card">
+                  <span>Recommended actions</span>
+                  <strong id="resultRecommendedActions">-</strong>
+                  <small>Action items generated</small>
                 </article>
               </div>
-              <div class="run-counts-grid">
-                <div><span>OCR Missing Lines</span><strong id="resultOcrMissing">-</strong></div>
-                <div><span>OCR Lines</span><strong id="resultOcrFields">-</strong></div>
-                <div><span>Correct fields</span><strong id="resultLlmTp">-</strong></div>
-                <div><span>Wrong fields</span><strong id="resultLlmFp">-</strong></div>
-                <div><span>Missing fields</span><strong id="resultLlmFn">-</strong></div>
-                <div><span>Needs review</span><strong id="resultLlmGrey">-</strong></div>
-              </div>
-              <button id="openLatestReport" class="secondary-button" type="button" disabled>Open Full Report</button>
+              <button id="openLatestReport" class="secondary-button" type="button" disabled>Open Report</button>
             </section>
           </div>
-          <section id="debugOutputPanel" class="card debug-output" hidden>
-            <div class="section-title">
-              <div>
-                <h2 id="debugOutputTitle">Evaluation Debug Output</h2>
-              </div>
-              <button id="closeDebugOutput" class="secondary-button" type="button">Hide</button>
-            </div>
-            <pre id="debugOutputPre"></pre>
-          </section>
         </section>
 
         <section id="history" class="view">
           <div class="page-heading">
-            <div class="heading-icon"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v6h6M12 7v6l4 2" /></svg></div>
+            <div class="heading-icon"><span class="ti ti-history"></span></div>
             <div>
               <h1>Run History</h1>
-              <p>Track and monitor OCR eval executions</p>
+              <p>Track field evaluation executions</p>
             </div>
           </div>
 
           <section class="toolbar card">
             <label class="search-box">
-              <svg viewBox="0 0 24 24"><path d="m21 21-5-5" /><circle cx="11" cy="11" r="7" /></svg>
-              <input id="historySearch" type="search" placeholder="Search by report, run ID, or filename..." />
+              <span class="ti ti-search"></span>
+              <input id="historySearch" type="search" placeholder="Search by run ID, report, or document type..." />
             </label>
             <button id="refreshReports" class="primary-button" type="button">Refresh</button>
           </section>
@@ -279,13 +244,15 @@
               <table class="history-table">
                 <thead>
                   <tr>
-                    <th>Report Name</th>
                     <th>Filename</th>
-                    <th><button id="sortF1" class="sort-button" type="button">Overall score <span id="sortF1Indicator">down</span></button></th>
-                    <th>OCR quality</th>
-                    <th>Extraction score</th>
-                    <th>Status</th>
-                    <th>Actions</th>
+                    <th>Document Type</th>
+                    <th><button id="sortF1" class="sort-button" type="button">F1 <span id="sortF1Indicator">down</span></button></th>
+                    <th>Passed</th>
+                    <th>Failed</th>
+                    <th>Missing</th>
+                    <th>Timestamp</th>
+                    <th>View</th>
+                    <th>Delete</th>
                   </tr>
                 </thead>
                 <tbody id="historyBody"></tbody>
@@ -293,11 +260,11 @@
             </div>
             <div class="history-pagination">
               <button id="historyPrev" class="icon-action pagination-arrow" type="button" aria-label="Previous page">
-                <svg viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></svg>
+                <span class="ti ti-chevron-left"></span>
               </button>
               <span id="historyPageLabel">Page 1 of 1</span>
               <button id="historyNext" class="icon-action pagination-arrow" type="button" aria-label="Next page">
-                <svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6" /></svg>
+                <span class="ti ti-chevron-right"></span>
               </button>
             </div>
           </section>
@@ -305,22 +272,22 @@
 
         <section id="reports" class="view">
           <div class="page-heading">
-            <div class="heading-icon"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z" /><path d="M9 13h6M9 17h5M15 3v4h4" /></svg></div>
+            <div class="heading-icon"><span class="ti ti-report"></span></div>
             <div>
-              <h1>Reports / Details</h1>
+              <h1>Reports</h1>
               <p>Open saved reports and inspect field-level quality</p>
             </div>
           </div>
           <section class="card empty-state">
             <h2>Select a report from Run History</h2>
-            <p>Use View Report to open the detailed comparison modal.</p>
+            <p>Use View to open the detailed comparison modal.</p>
             <button class="primary-button" type="button" data-section-jump="history">Go to Run History</button>
           </section>
         </section>
 
         <section id="settings" class="view">
           <div class="page-heading">
-            <div class="heading-icon"><svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z" /><path d="M3 12h3M18 12h3M12 3v3M12 18v3" /></svg></div>
+            <div class="heading-icon"><span class="ti ti-settings"></span></div>
             <div>
               <h1>Settings / Health</h1>
               <p>Runtime connectivity and backend status</p>
@@ -338,8 +305,7 @@
             <dl class="settings-list">
               <div><dt>Status</dt><dd id="healthStatus">Checking</dd></div>
               <div><dt>API Base URL</dt><dd id="apiBaseUrl">Same origin</dd></div>
-              <div><dt>GDS Path</dt><dd id="healthGdsPath">Not returned by backend</dd></div>
-              <div><dt>Results Path</dt><dd id="healthResultsPath">Not returned by backend</dd></div>
+              <div><dt>Results Configured</dt><dd id="healthResultsPath">Not returned by backend</dd></div>
               <div><dt>Azure OpenAI Configured</dt><dd id="healthOpenAi">Not returned by backend</dd></div>
             </dl>
           </section>
@@ -353,109 +319,59 @@
       <section class="report-modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
         <header class="modal-head">
           <div class="modal-title-group">
-            <div class="modal-icon"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z" /><path d="M9 13h6M9 17h5M15 3v4h4" /></svg></div>
+            <div class="modal-icon"><span class="ti ti-report"></span></div>
             <div>
               <h2 id="modalTitle">Evaluation Report</h2>
               <p id="modalSubtitle">Report details</p>
             </div>
           </div>
           <button id="closeModal" class="icon-button" type="button" aria-label="Close report">
-            <svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12" /></svg>
+            <span class="ti ti-x"></span>
           </button>
         </header>
         <div class="modal-summary">
           <div><span>Run ID</span><strong id="modalRunId">-</strong></div>
-          <div><span>Filename</span><strong id="modalFilename">-</strong></div>
-          <div><span>Overall score</span><strong id="combinedModalF1" class="combined-f1">-</strong></div>
-          <div><span>Accuracy</span><strong id="combinedModalPrecision">-</strong></div>
-          <div><span>Coverage</span><strong id="combinedModalRecall">-</strong></div>
+          <div><span>Document Type</span><strong id="modalDocumentType">-</strong></div>
+          <div><span>Timestamp</span><strong id="modalTimestamp">-</strong></div>
+          <div><span>F1</span><strong id="modalF1" class="combined-f1">-</strong></div>
         </div>
         <nav class="modal-tabs" aria-label="Report sections">
           <button class="modal-tab active" type="button" data-report-tab="summary">Summary</button>
-          <button class="modal-tab" type="button" data-report-tab="ocr">OCR eval</button>
-          <button class="modal-tab" type="button" data-report-tab="llm">LLM eval</button>
+          <button class="modal-tab" type="button" data-report-tab="fields">Field details</button>
         </nav>
         <div class="modal-content">
-          <section id="summaryTabPanel" class="report-tab-panel active" data-report-panel="summary">
-            <div id="comparisonGrid" class="comparison-grid"></div>
-            <p id="summaryLlmNote" class="legacy-note" hidden>LLM eval not available for this report</p>
+          <section class="report-tab-panel active" data-report-panel="summary">
+            <div id="legacyReportNote" class="banner" hidden></div>
+            <div class="summary-score-grid">
+              <article class="score-tile overall"><span>Overall score</span><strong id="summaryF1">-</strong></article>
+              <article class="score-tile pass"><span>Passed</span><strong id="summaryPassed">0</strong></article>
+              <article class="score-tile fail"><span>Failed</span><strong id="summaryFailed">0</strong></article>
+              <article class="score-tile missing"><span>Missing</span><strong id="summaryMissing">0</strong></article>
+            </div>
             <section class="insights-section">
               <h3>What this run tells you</h3>
               <div id="insightList" class="insight-list"></div>
             </section>
+            <section class="actions-section">
+              <h3>Recommended actions</h3>
+              <div id="recommendedActions" class="action-list"></div>
+            </section>
+            <pre id="legacyOcrData" class="legacy-ocr-data" hidden></pre>
             <div class="summary-actions">
-              <button id="downloadSummaryReport" class="secondary-button" type="button">
+              <button id="downloadSummaryReport" class="secondary-button inline-icon" type="button">
                 <span class="ti ti-download" aria-hidden="true"></span>
                 Download report
               </button>
-              <button id="viewBreakdownButton" class="secondary-button" type="button">
-                <span class="ti ti-external-link" aria-hidden="true"></span>
-                View full breakdown
-              </button>
             </div>
           </section>
-          <section id="ocrTabPanel" class="preview-panel eval-section report-tab-panel" data-report-panel="ocr">
-            <h3>OCR Evaluation</h3>
-            <div class="eval-stat-grid">
-              <div><span>Structure match</span><strong id="ocrModalF1">-</strong></div>
-              <div><span>Character accuracy</span><strong id="ocrModalPrecision">-</strong></div>
-              <div><span>Content similarity</span><strong id="ocrModalRecall">-</strong></div>
-              <div><span>OCR quality</span><strong id="ocrCompositeScore">-</strong></div>
-            </div>
-            <div id="ocrStructuralStatus" class="structural-status-banner"></div>
-            <details id="ocrMarkdownDiffPanel" class="markdown-diff-panel">
-              <summary>Markdown differences</summary>
-              <div class="diff-grid">
-                <div id="ocrMissingLinesSection">
-                  <h3>Lines in golden not found in OCR</h3>
-                  <p class="diff-subtitle">These lines exist in the reference document but were not extracted by Mistral OCR</p>
-                  <pre id="ocrMissingLines"></pre>
-                </div>
-                <div id="ocrAddedLinesSection">
-                  <h3>Lines OCR extracted that were not expected</h3>
-                  <p class="diff-subtitle">These lines were extracted by OCR but do not exist in the golden reference. May indicate OCR hallucination or document noise.</p>
-                  <pre id="ocrAddedLines"></pre>
-                </div>
-              </div>
-            </details>
-            <div class="line-accuracy-section">
-              <h3>Line-level accuracy</h3>
-              <p class="line-accuracy-help">A mismatch means the OCR read this line differently from the golden reference. CER measures character-level errors (0% = perfect match).</p>
-              <div id="ocrLineFilters" class="line-filter-row"></div>
-              <div id="ocrFieldResultsBody" class="line-accuracy-list"></div>
-            </div>
-          </section>
-          <section id="llmSection" class="preview-panel eval-section report-tab-panel" data-report-panel="llm">
-            <h3>LLM Evaluation</h3>
-            <p id="legacyLlmNote" class="legacy-note" hidden>LLM eval not available for this report</p>
-            <div class="eval-stat-grid">
-              <div><span>Extraction score</span><strong id="llmModalF1">-</strong></div>
-              <div><span>Accuracy</span><strong id="llmModalPrecision">-</strong></div>
-              <div><span>Coverage</span><strong id="llmModalRecall">-</strong></div>
-              <div><span>Correct fields</span><strong id="llmTp">-</strong></div>
-              <div><span>Wrong fields</span><strong id="llmFp">-</strong></div>
-              <div><span>Missing fields</span><strong id="llmFn">-</strong></div>
-              <div><span>Needs review</span><strong id="llmGrey">-</strong></div>
-            </div>
-            <div id="llmFieldFilters" class="field-filter-row"></div>
-            <div class="table-wrap modal-table">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Field</th>
-                    <th>Expected Value</th>
-                    <th>Extracted Value</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody id="llmFieldResultsBody"></tbody>
-              </table>
-            </div>
+          <section class="report-tab-panel" data-report-panel="fields">
+            <div id="fieldFilters" class="field-filter-row"></div>
+            <div id="fieldDetailsList" class="field-details-list"></div>
           </section>
         </div>
       </section>
     </div>
 
-    <script src="/assets/app.js?v=20260702-dynamic-schema-percent-metrics"></script>
+    <script src="/assets/app.js?v=20260720-centered-run-flow"></script>
   </body>
 </html>

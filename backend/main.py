@@ -1,4 +1,4 @@
-"""API and command-line entrypoint for DocsAI OCR evaluation."""
+"""API and command-line entrypoint for DocsAI field evaluations."""
 
 from __future__ import annotations
 
@@ -6,11 +6,10 @@ import argparse
 import json
 import logging
 import os
-import re
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -20,25 +19,8 @@ from backend.api_client import extract_ocr_fields, get_run_steps, get_run_steps_
 from backend.auth import get_bearer_token
 from backend.cleaner import clean_ocr_markdown
 from backend.config import get_settings
-from backend.evaluator import (
-    calculate_llm_f1,
-    calculate_ocr_markdown_score,
-    run_llm_field_comparison,
-    run_difflib,
-    run_jiwer_on_markdown,
-    run_rapidfuzz_on_markdown,
-)
-from backend.golden_loader import (
-    get_available_filenames,
-    get_expected_fields_from_record,
-    get_field_types_from_record,
-    get_gds_storage_dir,
-    get_gds_path,
-    get_reference_markdown,
-    load_all_golden,
-    load_golden_by_filename,
-    startup_check,
-)
+from backend.evaluator import llm_ocr_searcher, llm_semantic_judge, run_field_comparison
+from backend.field_entry_validator import infer_field_type, sanitize_field_value, validate_field_name
 from backend.normalizer import normalize_keys_to_camel
 from backend.report import save_report
 
@@ -47,40 +29,16 @@ logger = logging.getLogger(__name__)
 
 
 class EvalRequest(BaseModel):
-    """Request body for starting an OCR evaluation."""
+    """Request body for starting a UI-driven field evaluation."""
 
     run_id: str
-    filename: str
+    golden_fields: dict[str, Any]
 
-
-REQUIRED_GDS_KEYS = {
-    "filename",
-}
 
 tags_metadata = [
-    {
-        "name": "health",
-        "description": "Server health and connectivity checks",
-    },
-    {
-        "name": "debug",
-        "description": (
-            "Debug endpoints for testing DocsAI connectivity and GDS loading. "
-            "Use these to verify setup before running evaluations."
-        ),
-    },
-    {
-        "name": "golden",
-        "description": "Upload and manage the golden dataset",
-    },
-    {
-        "name": "evaluations",
-        "description": (
-            "Run evaluations and retrieve reports. Use /ocr to test OCR eval only, "
-            "/llm to test LLM eval only, /run for compact evals report saving, "
-            "and /run/full for verbose evals report saving."
-        ),
-    },
+    {"name": "health", "description": "Server health and connectivity checks"},
+    {"name": "debug", "description": "Debug endpoints for testing DocsAI connectivity"},
+    {"name": "evaluations", "description": "Run field evaluations and retrieve reports"},
 ]
 
 app = FastAPI(title="DocsAI Evals API", openapi_tags=tags_metadata)
@@ -105,84 +63,24 @@ async def add_static_asset_cache_headers(request: Request, call_next):
 
 @app.on_event("startup")
 def on_startup() -> None:
-    """Run non-fatal startup checks for paths, GDS, and OpenAI configuration."""
+    """Run non-fatal startup checks for result storage and Azure OpenAI config."""
     logging.basicConfig(level=logging.INFO)
     results_path = os.getenv("RESULTS_PATH")
-    gds_path = os.getenv("GDS_PATH")
     if results_path:
         os.makedirs(results_path, exist_ok=True)
-    if gds_path:
-        gds_parent = os.path.dirname(gds_path)
-        if gds_parent:
-            os.makedirs(gds_parent, exist_ok=True)
     try:
         settings = get_settings()
         if not settings.azure_openai_configured:
             logger.warning("Azure OpenAI judge is not fully configured.")
     except RuntimeError as exc:
         logger.warning("Startup configuration check failed: %s", exc)
-    startup_check()
     for env_name in ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_API_VERSION"):
         if not os.getenv(env_name):
             logger.warning("Azure OpenAI environment variable is missing: %s", env_name)
 
 
-def _print_summary(
-    diff_result: dict[str, Any],
-    jiwer_result: dict[str, Any],
-    fuzz_result: dict[str, Any],
-    ocr_score: dict[str, Any],
-    report_path: str,
-) -> None:
-    """Print a concise terminal summary of the evaluation."""
-    print("DocsAI OCR Evaluation Summary")
-    print(f"Missing lines: {diff_result['total_missing']}")
-    print(f"Added lines: {diff_result['total_added']}")
-    print(f"Overall CER: {jiwer_result.get('overall_cer')}")
-    print(f"Overall WER: {jiwer_result.get('overall_wer')}")
-    print(f"Fuzzy status: {fuzz_result.get('status')} score={fuzz_result.get('overall_score')}")
-    print(
-        "OCR composite: "
-        f"structural={ocr_score['structural_score']} "
-        f"text_accuracy={ocr_score['text_accuracy_score']} "
-        f"similarity={ocr_score['similarity_score']} "
-        f"composite={ocr_score['composite_score']}"
-    )
-    print(f"Report saved: {report_path}")
-
-
-def _calculate_combined(ocr_score: dict[str, Any], llm_f1: dict[str, Any]) -> dict[str, float]:
-    """Average OCR markdown score and LLM field F1 into evals report scores."""
-    ocr_composite = float(ocr_score.get("composite_score", 0))
-    llm_score = float(llm_f1.get("f1", 0))
-    return {
-        "f1": round((ocr_composite + llm_score) / 2, 4),
-        "precision": round((ocr_composite + float(llm_f1.get("precision", 0))) / 2, 4),
-        "recall": round((ocr_composite + float(llm_f1.get("recall", 0))) / 2, 4),
-    }
-
-
-def _scores_from_f1(f1_scores: dict[str, Any]) -> dict[str, float]:
-    """Return precision, recall, and F1 scores rounded for an evals report."""
-    return {
-        "f1": round(float(f1_scores.get("f1", 0)), 4),
-        "precision": round(float(f1_scores.get("precision", 0)), 4),
-        "recall": round(float(f1_scores.get("recall", 0)), 4),
-    }
-
-
-def _scores_from_ocr_score(ocr_score: dict[str, Any]) -> dict[str, float]:
-    """Return evals report score fields from OCR markdown composite score."""
-    composite_score = round(float(ocr_score.get("composite_score", 0)), 4)
-    return {
-        "f1": composite_score,
-        "precision": composite_score,
-        "recall": composite_score,
-    }
-
-
 def _fetch_run_data(run_id: str) -> dict[str, Any]:
-    """Fetch DocsAI run output and translate common failures to HTTP errors."""
+    """Fetch DocsAI run output and translate common failures to API errors."""
     try:
         return get_run_steps(run_id)
     except RuntimeError as exc:
@@ -192,30 +90,11 @@ def _fetch_run_data(run_id: str) -> dict[str, Any]:
         if "Status: 404" in message:
             raise HTTPException(status_code=404, detail=f"Run ID not found: {run_id}") from exc
         if "OCR step not found" in message or "No markdown content found" in message:
-            raise HTTPException(status_code=404, detail=message) from exc
+            raise HTTPException(
+                status_code=422,
+                detail="Run does not have a completed OCR step. Check the run status in DocsAI.",
+            ) from exc
         raise HTTPException(status_code=500, detail=message) from exc
-
-
-def _load_golden_record(filename: str) -> dict[str, Any]:
-    """Load the GDS record for a filename or raise a 404 with available names."""
-    golden_record = load_golden_by_filename(filename)
-    if golden_record is not None:
-        return golden_record
-
-    available_files = get_available_filenames()
-    if not available_files:
-        raise HTTPException(
-            status_code=404,
-            detail="No golden dataset records found. Upload a golden dataset first using /api/golden/upload.",
-        )
-    raise HTTPException(
-        status_code=404,
-        detail={
-            "message": "Filename not found in golden dataset.",
-            "requested_filename": filename,
-            "available_files": available_files,
-        },
-    )
 
 
 def _detect_document_type(llm_output: dict[str, Any] | None) -> str:
@@ -268,353 +147,234 @@ def _detect_document_type(llm_output: dict[str, Any] | None) -> str:
     return "unknown"
 
 
-def _run_ocr_eval_steps(
-    run_data: dict[str, Any],
-    record: dict[str, Any],
-    document_type: str,
-) -> dict[str, Any]:
-    """Run OCR markdown-only evaluation steps without saving a report."""
-    del document_type
-    golden_markdown = get_reference_markdown(record)
-    ocr_markdown = clean_ocr_markdown(run_data["ocr_markdown"])
-    try:
-        diff_result = run_difflib(golden_markdown, ocr_markdown)
-        jiwer_result = run_jiwer_on_markdown(golden_markdown, ocr_markdown)
-        fuzz_result = run_rapidfuzz_on_markdown(golden_markdown, ocr_markdown)
-        ocr_score = calculate_ocr_markdown_score(diff_result, jiwer_result, fuzz_result)
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"Eval calculation error: {exc}") from exc
-
-    return {
-        "diff_result": diff_result,
-        "jiwer_result": jiwer_result,
-        "fuzz_result": fuzz_result,
-        "ocr_score": ocr_score,
+def _multiple_document_warning(llm_output: Any) -> str | None:
+    """Return a warning when extraction output contains multiple document objects."""
+    output = normalize_keys_to_camel(llm_output) if isinstance(llm_output, dict) else {}
+    extracted_data = output.get("extractedData")
+    if isinstance(extracted_data, dict):
+        output = normalize_keys_to_camel(extracted_data)
+    skip_keys = {
+        "success",
+        "extractionConfidence",
+        "documentType",
+        "classifiedFiles",
+        "lineItems",
+        "extractedFields",
     }
+    stack = [output]
+    while stack:
+        current = stack.pop()
+        if not isinstance(current, dict):
+            continue
+        for key, value in current.items():
+            if key in skip_keys:
+                continue
+            if isinstance(value, list) and len(value) > 1 and all(isinstance(item, dict) for item in value):
+                logger.warning("Multiple document objects found for %s; using first object only.", key)
+                return "Multiple document objects found. Evaluated first object only."
+            if isinstance(value, dict):
+                stack.append(value)
+    return None
 
 
-def _run_llm_eval_steps(
-    run_data: dict[str, Any],
-    record: dict[str, Any],
-    document_type: str,
-) -> dict[str, Any]:
-    """Run LLM field comparison steps without saving a report."""
-    golden_fields = get_expected_fields_from_record(record, document_type)
-    field_types = get_field_types_from_record(record, document_type, fields=golden_fields)
-    ocr_fields = extract_ocr_fields(run_data.get("llm_output"), document_type)
-    logger.info("LLM eval - document_type detected: %s", document_type)
-    logger.info("LLM eval - golden_fields keys: %s", list(golden_fields.keys()))
-    logger.info("LLM eval - ocr_fields keys: %s", list(ocr_fields.keys()))
-    logger.info("LLM eval - field count: golden=%s, ocr=%s", len(golden_fields), len(ocr_fields))
-
-    try:
-        field_comparison = run_llm_field_comparison(golden_fields, ocr_fields, field_types)
-        f1_scores = calculate_llm_f1(field_comparison)
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"LLM eval calculation error: {exc}") from exc
-
-    return {
-        "field_comparison": field_comparison,
-        "f1_scores": f1_scores,
-    }
-
-
-def _save_full_evaluation_report(
-    run_id: str,
-    filename: str,
-    document_type: str,
-    ocr_eval: dict[str, Any],
-    llm_eval: dict[str, Any],
-    combined: dict[str, Any],
-) -> str:
-    """Save the full OCR, LLM, and evals report."""
-    try:
-        return save_report(
-            run_id=run_id,
-            filename=filename,
-            document_type=document_type,
-            eval_type="full",
-            diff_result=ocr_eval["diff_result"],
-            jiwer_result=ocr_eval["jiwer_result"],
-            fuzz_result=ocr_eval["fuzz_result"],
-            ocr_score=ocr_eval["ocr_score"],
-            llm_comparison_result=llm_eval["field_comparison"],
-            llm_f1=llm_eval["f1_scores"],
-            combined_scores=combined,
-            evals_report=combined,
+def _extract_fields_from_run(run_data: dict[str, Any]) -> tuple[str, dict[str, Any], str | None]:
+    """Return document type, extracted fields, and optional multi-object warning."""
+    llm_output = run_data.get("llm_output")
+    if llm_output is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Run does not have a completed extraction step. "
+                "Check that the DocsAI workflow includes an LLM extraction step."
+            ),
         )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-def _save_single_evaluation_report(
-    run_id: str,
-    filename: str,
-    document_type: str,
-    eval_type: str,
-    ocr_eval: dict[str, Any] | None = None,
-    llm_eval: dict[str, Any] | None = None,
-) -> str:
-    """Save an OCR-only or LLM-only evaluation report."""
-    if eval_type == "ocr":
-        evals_report = _scores_from_ocr_score((ocr_eval or {}).get("ocr_score", {}))
-    elif eval_type == "llm":
-        evals_report = _scores_from_f1((llm_eval or {}).get("f1_scores", {}))
-    else:
-        raise HTTPException(status_code=422, detail=f"Unsupported eval type: {eval_type}")
-
-    try:
-        return save_report(
-            run_id=run_id,
-            filename=filename,
-            document_type=document_type,
-            eval_type=eval_type,
-            diff_result=(ocr_eval or {}).get("diff_result", {}),
-            jiwer_result=(ocr_eval or {}).get("jiwer_result", {}),
-            fuzz_result=(ocr_eval or {}).get("fuzz_result", {}),
-            ocr_score=(ocr_eval or {}).get("ocr_score", {}),
-            llm_comparison_result=(llm_eval or {}).get("field_comparison", {}),
-            llm_f1=(llm_eval or {}).get("f1_scores", {}),
-            combined_scores=evals_report,
-            evals_report=evals_report,
+    document_type = _detect_document_type(llm_output)
+    extracted_fields = extract_ocr_fields(llm_output, document_type)
+    if not extracted_fields:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Could not find extracted fields in this run. "
+                "Check that the run completed and has an extraction step."
+            ),
         )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return document_type, extracted_fields, _multiple_document_warning(llm_output)
 
 
-def _report_ocr_eval(report: dict[str, Any]) -> dict[str, Any]:
-    """Return OCR eval data from either new or legacy report shape."""
-    if isinstance(report.get("ocr_eval"), dict):
-        return report["ocr_eval"]
+def _validate_and_sanitize_golden_fields(golden_fields: dict[str, Any]) -> dict[str, str]:
+    """Validate user-entered fields and return sanitized string values."""
+    if not isinstance(golden_fields, dict) or not golden_fields:
+        raise HTTPException(
+            status_code=400,
+            detail="No fields entered. Add at least one expected field value to run evaluation.",
+        )
+
+    sanitized: dict[str, str] = {}
+    for field, value in golden_fields.items():
+        validation = validate_field_name(field)
+        if not validation["valid"]:
+            raise HTTPException(
+                status_code=400,
+                detail={"field": field, "message": validation["error"]},
+            )
+        sanitized[str(field).strip()] = sanitize_field_value(value)
+    return sanitized
+
+
+def _calculate_f1(results: dict[str, dict[str, Any]]) -> dict[str, float | int]:
+    """Calculate precision, recall, and F1 from new field statuses."""
+    tp = sum(1 for result in results.values() if result.get("status") == "TP")
+    fp = sum(1 for result in results.values() if result.get("status") in ("FP", "EXTRA"))
+    fn = sum(1 for result in results.values() if result.get("status") == "FN")
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
     return {
-        "diff_result": report.get("diff_result", {}),
-        "jiwer_result": report.get("jiwer_result", {}),
-        "fuzz_result": report.get("fuzz_result", {}),
-        "ocr_score": report.get("ocr_score", {}),
-        "f1_scores": report.get("f1_scores", {}),
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "precision": round(precision, 4),
+        "recall": round(recall, 4),
+        "f1": round(f1, 4),
     }
 
 
-def _report_evals_scores(report: dict[str, Any]) -> dict[str, Any]:
-    """Return evals report scores, falling back to older report shapes."""
-    evals_report = report.get("evals_report")
-    if isinstance(evals_report, dict) and evals_report:
-        return evals_report
-    combined = report.get("combined")
-    if isinstance(combined, dict) and combined:
-        return combined
-    llm_eval = report.get("llm_eval")
-    if isinstance(llm_eval, dict) and isinstance(llm_eval.get("f1_scores"), dict) and llm_eval["f1_scores"]:
-        return llm_eval["f1_scores"]
-    ocr_eval = _report_ocr_eval(report)
-    if isinstance(ocr_eval.get("ocr_score"), dict) and ocr_eval["ocr_score"]:
-        return _scores_from_ocr_score(ocr_eval["ocr_score"])
-    return ocr_eval.get("f1_scores", {})
+def _recommended_actions(results: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
+    """Build recommended actions from OCR root-cause diagnoses."""
+    actions: list[dict[str, str]] = []
+    for field_name, result in results.items():
+        ocr_search = result.get("ocr_search")
+        verdict = ocr_search.get("verdict") if isinstance(ocr_search, dict) else None
+        if verdict == "PROMPT_PROBLEM":
+            actions.append(
+                {
+                    "field": field_name,
+                    "action": (
+                        f"Tune the extraction prompt or YAML schema to correctly pick up {field_name}. "
+                        "The value exists in the OCR output."
+                    ),
+                }
+            )
+        elif verdict == "OCR_LIMITATION":
+            actions.append(
+                {
+                    "field": field_name,
+                    "action": (
+                        f"OCR did not extract {field_name}. This cannot be fixed via prompt tuning. "
+                        "Consider pre-processing or document quality improvements."
+                    ),
+                }
+            )
+        elif result.get("status") == "FN" and not ocr_search:
+            actions.append(
+                {
+                    "field": field_name,
+                    "action": f"{field_name} was missing from extraction output. Run OCR search to diagnose root cause.",
+                }
+            )
+    return actions
 
 
-def run_ocr_eval(run_id: str, filename: str) -> dict[str, Any]:
-    """Run the full OCR evaluation workflow for a DocsAI run and filename."""
+def _summarize_report(results: dict[str, dict[str, Any]]) -> dict[str, int]:
+    """Summarize field outcomes and diagnostic categories."""
+    uncertain_resolved = sum(1 for result in results.values() if isinstance(result.get("llm_judge"), dict))
+    prompt_problems = sum(
+        1
+        for result in results.values()
+        if isinstance(result.get("ocr_search"), dict)
+        and result["ocr_search"].get("verdict") == "PROMPT_PROBLEM"
+    )
+    ocr_limitations = sum(
+        1
+        for result in results.values()
+        if isinstance(result.get("ocr_search"), dict)
+        and result["ocr_search"].get("verdict") == "OCR_LIMITATION"
+    )
+    uncertain_unresolved = sum(1 for result in results.values() if result.get("status") == "GREY_UNRESOLVED")
+    return {
+        "total_fields": len(results),
+        "passed": sum(1 for result in results.values() if result.get("status") == "TP"),
+        "failed": sum(1 for result in results.values() if result.get("status") in ("FP", "EXTRA")),
+        "missing": sum(1 for result in results.values() if result.get("status") == "FN"),
+        "uncertain_resolved": uncertain_resolved,
+        "uncertain_unresolved": uncertain_unresolved,
+        "prompt_problems": prompt_problems,
+        "ocr_limitations": ocr_limitations,
+    }
+
+
+def run_ocr_eval(run_id: str, golden_fields: dict[str, Any], eval_type: str = "full") -> dict[str, Any]:
+    """Run the field-entry evaluation workflow for a DocsAI run."""
     try:
         run_data = _fetch_run_data(run_id)
-        golden_record = _load_golden_record(filename)
-        document_type = _detect_document_type(run_data.get("llm_output"))
-        ocr_eval = _run_ocr_eval_steps(run_data, golden_record, document_type)
-        llm_eval = _run_llm_eval_steps(run_data, golden_record, document_type)
-        combined_scores = _calculate_combined(ocr_eval["ocr_score"], llm_eval["f1_scores"])
-        report_path = _save_full_evaluation_report(
-            run_id,
-            filename,
-            document_type,
-            ocr_eval,
-            llm_eval,
-            combined_scores,
-        )
+        ocr_markdown = clean_ocr_markdown(run_data["ocr_markdown"])
+        document_type, extracted_fields, warning = _extract_fields_from_run(run_data)
+        sanitized_golden = _validate_and_sanitize_golden_fields(golden_fields)
+        field_types = {field: infer_field_type(field) for field in sanitized_golden}
+        results = run_field_comparison(sanitized_golden, extracted_fields, field_types)
 
-        _print_summary(
-            ocr_eval["diff_result"],
-            ocr_eval["jiwer_result"],
-            ocr_eval["fuzz_result"],
-            ocr_eval["ocr_score"],
-            report_path,
-        )
-        return {
-            "status": "success",
+        grey_fields = [field for field, result in results.items() if result["status"] == "GREY"]
+        for field in grey_fields:
+            judge_result = llm_semantic_judge(
+                field,
+                results[field]["golden_value"],
+                results[field]["extracted_value"],
+                results[field]["field_type"],
+            )
+            if judge_result["verdict"] == "PASS":
+                results[field]["status"] = "TP"
+            elif judge_result["verdict"] == "FAIL":
+                results[field]["status"] = "FP"
+            else:
+                results[field]["status"] = "GREY_UNRESOLVED"
+            results[field]["llm_judge"] = judge_result
+
+        failed_fields = [
+            field
+            for field, result in results.items()
+            if result["status"] in ("FP", "FN") and result["golden_value"] != ""
+        ]
+        for field in failed_fields:
+            results[field]["ocr_search"] = llm_ocr_searcher(
+                field,
+                results[field]["golden_value"],
+                ocr_markdown,
+            )
+
+        f1_scores = _calculate_f1(results)
+        timestamp = datetime.now(timezone.utc).isoformat()
+        report: dict[str, Any] = {
             "run_id": run_id,
-            "filename": filename,
-            "report_name": os.path.basename(report_path),
-            "ocr_eval": {
-                "composite_score": ocr_eval["ocr_score"]["composite_score"],
-                "structural_score": ocr_eval["ocr_score"]["structural_score"],
-                "text_accuracy_score": ocr_eval["ocr_score"]["text_accuracy_score"],
-                "similarity_score": ocr_eval["ocr_score"]["similarity_score"],
-                "missing_lines": ocr_eval["diff_result"]["total_missing"],
-                "line_count": len(ocr_eval["jiwer_result"].get("line_results", [])),
-            },
-            "llm_eval": {
-                "f1": llm_eval["f1_scores"]["f1"],
-                "precision": llm_eval["f1_scores"]["precision"],
-                "recall": llm_eval["f1_scores"]["recall"],
-                "tp": llm_eval["f1_scores"]["tp"],
-                "fp": llm_eval["f1_scores"]["fp"],
-                "fn": llm_eval["f1_scores"]["fn"],
-                "grey_count": llm_eval["f1_scores"]["grey_count"],
-            },
-            "evals_report": combined_scores,
-            "combined": combined_scores,
+            "filename": run_id,
+            "document_type": document_type,
+            "timestamp": timestamp,
+            "eval_type": eval_type,
+            "golden_fields_entered": sanitized_golden,
+            "field_comparison": results,
+            "f1_scores": f1_scores,
+            "evals_report": f1_scores,
+            "recommended_actions": _recommended_actions(results),
+            "summary": _summarize_report(results),
         }
+        if warning:
+            report["warning"] = warning
+
+        report_path = save_report(
+            run_id=run_id,
+            filename=run_id,
+            document_type=document_type,
+            eval_type=eval_type,
+            field_report=report,
+        )
+        report["report_name"] = os.path.basename(report_path)
+        report["report_filename"] = os.path.basename(report_path)
+        report["status"] = "success"
+        return report
     except HTTPException:
         raise
     except Exception as exc:
         logger.exception("Unexpected evaluation error for run %s.", run_id)
         raise HTTPException(status_code=500, detail=f"Unexpected evaluation error: {exc}") from exc
-
-
-def _validate_golden_record(record: Any, line_number: int) -> None:
-    """Validate one uploaded golden dataset record."""
-    if not isinstance(record, dict):
-        raise HTTPException(status_code=400, detail=f"Line {line_number}: record must be a JSON object.")
-    normalized_record = normalize_keys_to_camel(record)
-
-    for key in REQUIRED_GDS_KEYS:
-        if key not in record or str(record.get(key, "")).strip() == "":
-            raise HTTPException(status_code=400, detail=f"Line {line_number}: missing key '{key}'.")
-
-    has_reference = bool(
-        normalized_record.get("referenceMarkdown")
-        or normalized_record.get("ocrMarkdown")
-    )
-    json_output = normalized_record.get("jsonOutput")
-    has_document_key = any(isinstance(value, list) and value for value in normalized_record.values())
-    has_json_output_document_key = isinstance(json_output, dict) and any(
-        isinstance(value, list) and value for value in json_output.values()
-    )
-    if not has_reference and not has_document_key and not has_json_output_document_key:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Line {line_number}: record must include reference_markdown "
-                "or at least one non-empty document list."
-            ),
-        )
-
-
-def _validate_golden_record_by_index(record: Any, index: int) -> None:
-    """Validate one JSON-uploaded golden record by array index."""
-    try:
-        _validate_golden_record(record, index)
-    except HTTPException as exc:
-        raise HTTPException(
-            status_code=exc.status_code,
-            detail=str(exc.detail).replace(f"Line {index}:", f"Record {index}:"),
-        ) from exc
-
-
-def _parse_golden_upload(filename: str, content: bytes) -> list[dict[str, Any]]:
-    """Parse .jsonl or .json golden uploads into validated records."""
-    lower_name = filename.lower()
-    try:
-        text = content.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise HTTPException(status_code=400, detail="Golden dataset must be UTF-8 JSON.") from exc
-
-    if lower_name.endswith(".jsonl"):
-        records: list[dict[str, Any]] = []
-        for line_number, line in enumerate(text.splitlines(), start=1):
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise HTTPException(status_code=400, detail=f"Line {line_number}: invalid JSON.") from exc
-            _validate_golden_record(record, line_number)
-            records.append(record)
-        return records
-
-    if lower_name.endswith(".json"):
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="Golden dataset JSON is invalid.") from exc
-        if isinstance(payload, dict):
-            records = [payload]
-        elif isinstance(payload, list):
-            records = payload
-        else:
-            raise HTTPException(status_code=400, detail="Golden dataset JSON must be an object or array of objects.")
-        for index, record in enumerate(records, start=1):
-            _validate_golden_record_by_index(record, index)
-        return records
-
-    raise HTTPException(status_code=400, detail="Golden dataset must be .jsonl or .json")
-
-
-def _safe_upload_filename(filename: str) -> str:
-    """Return a filesystem-safe golden dataset upload filename."""
-    base_name = os.path.basename(filename or "golden_dataset.json")
-    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", base_name).strip("._")
-    return safe_name or "golden_dataset.json"
-
-
-def _find_uploaded_golden_file(filename: str) -> str:
-    """Return the newest retained upload path for an original upload filename."""
-    storage_dir = get_gds_storage_dir()
-    os.makedirs(storage_dir, exist_ok=True)
-    safe_name = _safe_upload_filename(filename)
-    matches = [
-        os.path.join(storage_dir, name)
-        for name in os.listdir(storage_dir)
-        if name == safe_name or name.endswith(f"_{safe_name}")
-    ]
-    if not matches:
-        return ""
-    matches.sort(key=lambda path: os.path.getmtime(path), reverse=True)
-    return matches[0]
-
-
-def _save_uploaded_golden_file(filename: str, normalized_text: str, duplicate_action: str) -> tuple[str, str]:
-    """Save an uploaded golden dataset using explicit duplicate handling."""
-    storage_dir = get_gds_storage_dir()
-    os.makedirs(storage_dir, exist_ok=True)
-    safe_name = _safe_upload_filename(filename)
-    existing_path = _find_uploaded_golden_file(filename)
-    normalized_action = duplicate_action.strip().lower()
-
-    if normalized_action not in {"reject", "overwrite", "save_new"}:
-        raise HTTPException(status_code=400, detail="duplicate_action must be reject, overwrite, or save_new.")
-
-    if existing_path and normalized_action == "reject":
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "duplicate_gds_filename",
-                "message": "A golden dataset with this upload filename already exists.",
-                "filename": safe_name,
-                "existing_path": existing_path,
-            },
-        )
-
-    if existing_path and normalized_action == "overwrite":
-        try:
-            with open(existing_path, "w", encoding="utf-8") as handle:
-                handle.write(normalized_text)
-        except OSError as exc:
-            raise HTTPException(status_code=500, detail="Unable to overwrite golden dataset.") from exc
-        return existing_path, "overwritten"
-
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    stored_path = os.path.join(storage_dir, f"{timestamp}_{safe_name}")
-    collision_count = 1
-    while os.path.exists(stored_path):
-        stored_path = os.path.join(storage_dir, f"{timestamp}_{collision_count}_{safe_name}")
-        collision_count += 1
-
-    try:
-        with open(stored_path, "x", encoding="utf-8") as handle:
-            handle.write(normalized_text)
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail="Unable to save golden dataset.") from exc
-
-    return stored_path, "saved_new"
 
 
 def _load_report_files() -> list[dict[str, Any]]:
@@ -644,6 +404,32 @@ def _load_report_files() -> list[dict[str, Any]]:
     return reports
 
 
+def _report_evals_scores(report: dict[str, Any]) -> dict[str, Any]:
+    """Return score data from new or legacy report shapes."""
+    if isinstance(report.get("f1_scores"), dict) and report["f1_scores"]:
+        return report["f1_scores"]
+    evals_report = report.get("evals_report")
+    if isinstance(evals_report, dict) and evals_report:
+        return evals_report
+    combined = report.get("combined")
+    if isinstance(combined, dict) and combined:
+        return combined
+    llm_eval = report.get("llm_eval")
+    if isinstance(llm_eval, dict) and isinstance(llm_eval.get("f1_scores"), dict):
+        return llm_eval["f1_scores"]
+    return {}
+
+
+def _report_field_comparison(report: dict[str, Any]) -> dict[str, Any]:
+    """Return field comparison data from new or legacy report shapes."""
+    if isinstance(report.get("field_comparison"), dict):
+        return report["field_comparison"]
+    llm_eval = report.get("llm_eval")
+    if isinstance(llm_eval, dict) and isinstance(llm_eval.get("field_comparison"), dict):
+        return llm_eval["field_comparison"]
+    return {}
+
+
 @app.get("/api/health", tags=["health"])
 def health() -> dict[str, Any]:
     """Return API health status."""
@@ -666,52 +452,11 @@ def health() -> dict[str, Any]:
     )
     return {
         "status": "ok",
-        "gds_configured": bool(os.getenv("GDS_PATH", "").strip()),
         "results_configured": bool(os.getenv("RESULTS_PATH", "").strip()),
         "azure_openai_configured": azure_openai_configured,
-        "azure_auth_method": os.getenv("AZURE_AUTH_METHOD", "default_credential").strip()
-        or "default_credential",
+        "azure_auth_method": os.getenv("AZURE_AUTH_METHOD", "default_credential").strip() or "default_credential",
         "docsai_configured": docsai_configured,
         "azure_openai_region": os.getenv("AZURE_OPENAI_REGION", "").strip(),
-    }
-
-
-@app.get("/api/debug/golden", tags=["debug"])
-def debug_golden() -> dict[str, Any]:
-    """Return safe debug information about the configured golden dataset."""
-    try:
-        gds_path = get_gds_path()
-        storage_dir = get_gds_storage_dir()
-    except RuntimeError:
-        return {
-            "gds_path": "",
-            "storage_dir": "",
-            "exists": False,
-            "record_count": 0,
-            "available_filenames": [],
-            "message": "GDS_PATH is not configured.",
-        }
-
-    if not os.path.exists(gds_path) and not os.path.isdir(storage_dir):
-        return {
-            "gds_path": gds_path,
-            "storage_dir": storage_dir,
-            "exists": False,
-            "record_count": 0,
-            "available_filenames": [],
-            "message": "No golden dataset uploaded yet.",
-        }
-
-    try:
-        records = load_all_golden()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return {
-        "gds_path": gds_path,
-        "storage_dir": storage_dir,
-        "exists": True,
-        "record_count": len(records),
-        "available_filenames": [str(record.get("filename")) for record in records if record.get("filename")],
     }
 
 
@@ -748,143 +493,55 @@ def debug_docsai_run(
         if "Status: 404" in message:
             raise HTTPException(status_code=404, detail=f"Run ID not found: {run_id}") from exc
         if "OCR step not found" in message or "No markdown content found" in message:
-            raise HTTPException(status_code=404, detail=message) from exc
+            raise HTTPException(
+                status_code=422,
+                detail="Run does not have a completed OCR step. Check the run status in DocsAI.",
+            ) from exc
         raise HTTPException(status_code=500, detail=f"DocsAI run debug failed: {message}") from exc
 
 
-@app.post("/api/golden/upload", tags=["golden"])
-async def upload_golden_dataset(
-    file: UploadFile = File(...),
-    duplicate_action: str = Query("reject"),
-) -> dict[str, Any]:
-    """Upload and retain a golden dataset file without replacing older uploads."""
-    filename = file.filename or ""
-    content = await file.read()
-    records = _parse_golden_upload(filename, content)
-
-    try:
-        _ = get_gds_path()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    try:
-        normalized_text = content.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise HTTPException(status_code=400, detail="Golden dataset must be UTF-8 JSON.") from exc
-
-    stored_path, stored_action = _save_uploaded_golden_file(filename, normalized_text, duplicate_action)
-    available_filenames = get_available_filenames()
-
-    return {
-        "success": True,
-        "filename": file.filename,
-        "duplicate_action": duplicate_action,
-        "stored_action": stored_action,
-        "records": len(records),
-        "uploaded_filenames": [str(record.get("filename")) for record in records if record.get("filename")],
-        "available_filenames": available_filenames,
-        "total_available_filenames": len(available_filenames),
-        "stored_as": stored_path,
-        "storage_dir": get_gds_storage_dir(),
-    }
-
-
-@app.post(
-    "/api/evaluations/ocr",
-    tags=["evaluations"],
-    summary="Run OCR Evaluation Only",
-)
-def run_ocr_evaluation_only(request: EvalRequest) -> dict[str, Any]:
-    """Run isolated OCR evaluation, save its report, and return full OCR output."""
-    run_data = _fetch_run_data(request.run_id)
-    golden_record = _load_golden_record(request.filename)
-    document_type = _detect_document_type(run_data.get("llm_output"))
-    ocr_eval = _run_ocr_eval_steps(run_data, golden_record, document_type)
-    report_path = _save_single_evaluation_report(
-        request.run_id,
-        request.filename,
-        document_type,
-        "ocr",
-        ocr_eval=ocr_eval,
-    )
-    return {
-        "run_id": request.run_id,
-        "filename": request.filename,
+@app.get("/api/run/{run_id}/fields", tags=["evaluations"])
+def get_run_fields(run_id: str) -> dict[str, Any]:
+    """Fetch a DocsAI run and return extracted field names and values."""
+    run_data = _fetch_run_data(run_id)
+    llm_output = run_data.get("llm_output")
+    if llm_output is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Run does not have a completed extraction step. "
+                "Check that the DocsAI workflow includes an LLM extraction step."
+            ),
+        )
+    document_type = _detect_document_type(llm_output)
+    extracted_fields = extract_ocr_fields(llm_output, document_type)
+    warning = _multiple_document_warning(llm_output)
+    response = {
         "document_type": document_type,
-        "eval_type": "ocr",
-        "report_name": os.path.basename(report_path),
-        "ocr_eval": ocr_eval,
-        "evals_report": _scores_from_ocr_score(ocr_eval["ocr_score"]),
+        "extracted_fields": extracted_fields,
+        "field_count": len(extracted_fields),
     }
+    if warning:
+        response["warning"] = warning
+    return response
 
 
-@app.post(
-    "/api/evaluations/llm",
-    tags=["evaluations"],
-    summary="Run LLM Evaluation Only",
-)
-def run_llm_evaluation_only(request: EvalRequest) -> dict[str, Any]:
-    """Run isolated LLM field evaluation, save its report, and return full LLM output."""
-    run_data = _fetch_run_data(request.run_id)
-    golden_record = _load_golden_record(request.filename)
-    document_type = _detect_document_type(run_data.get("llm_output"))
-    llm_eval = _run_llm_eval_steps(run_data, golden_record, document_type)
-    report_path = _save_single_evaluation_report(
-        request.run_id,
-        request.filename,
-        document_type,
-        "llm",
-        llm_eval=llm_eval,
-    )
-    return {
-        "run_id": request.run_id,
-        "filename": request.filename,
-        "document_type": document_type,
-        "eval_type": "llm",
-        "report_name": os.path.basename(report_path),
-        "llm_eval": llm_eval,
-        "evals_report": _scores_from_f1(llm_eval["f1_scores"]),
-    }
+@app.post("/api/evaluations/llm", tags=["evaluations"], summary="Run Field Evaluation")
+def run_llm_evaluation(request: EvalRequest) -> dict[str, Any]:
+    """Run the new field-entry evaluation flow."""
+    return run_ocr_eval(request.run_id, request.golden_fields, eval_type="llm")
 
 
-@app.post(
-    "/api/evaluations/run/full",
-    tags=["evaluations"],
-    summary="Run Full Evaluation and Save Report (verbose output)",
-)
+@app.post("/api/evaluations/run/full", tags=["evaluations"], summary="Run Field Evaluation and Save Report")
 def run_full_evaluation_verbose(request: EvalRequest) -> dict[str, Any]:
-    """Run OCR and LLM evals, save a report, and return the full output."""
-    run_data = _fetch_run_data(request.run_id)
-    golden_record = _load_golden_record(request.filename)
-    document_type = _detect_document_type(run_data.get("llm_output"))
-    ocr_eval = _run_ocr_eval_steps(run_data, golden_record, document_type)
-    llm_eval = _run_llm_eval_steps(run_data, golden_record, document_type)
-    combined = _calculate_combined(ocr_eval["ocr_score"], llm_eval["f1_scores"])
-    report_path = _save_full_evaluation_report(
-        request.run_id,
-        request.filename,
-        document_type,
-        ocr_eval,
-        llm_eval,
-        combined,
-    )
-    return {
-        "run_id": request.run_id,
-        "filename": request.filename,
-        "document_type": document_type,
-        "eval_type": "full",
-        "report_name": os.path.basename(report_path),
-        "ocr_eval": ocr_eval,
-        "llm_eval": llm_eval,
-        "evals_report": combined,
-        "combined": combined,
-    }
+    """Run the new field-entry evaluation flow and return full report data."""
+    return run_ocr_eval(request.run_id, request.golden_fields, eval_type="full")
 
 
 @app.post("/api/evaluations/run", tags=["evaluations"])
 def run_evaluation(request: EvalRequest) -> dict[str, Any]:
-    """Run an OCR evaluation from the browser UI."""
-    return run_ocr_eval(request.run_id, request.filename)
+    """Run a field-entry evaluation from the browser UI."""
+    return run_ocr_eval(request.run_id, request.golden_fields, eval_type="full")
 
 
 @app.get("/api/evaluations/reports", tags=["evaluations"])
@@ -905,44 +562,48 @@ def evaluation_summary() -> dict[str, Any]:
             "average_f1": 0,
             "average_recall": 0,
             "average_precision": 0,
+            "total_prompt_problems": 0,
+            "total_ocr_limitations": 0,
+            "total_uncertain": 0,
+            "reports_by_document_type": {},
             "worst_field": "",
             "best_field": "",
-            "reports_by_document_type": {},
         }
 
     total_runs = len(reports)
-    average_f1 = sum(_report_evals_scores(report).get("f1", 0) for report in reports) / total_runs
-    average_recall = sum(_report_evals_scores(report).get("recall", 0) for report in reports) / total_runs
-    average_precision = sum(
-        _report_evals_scores(report).get("precision", 0) for report in reports
-    ) / total_runs
-    field_scores: dict[str, list[float]] = {}
+    average_f1 = sum(float(_report_evals_scores(report).get("f1", 0) or 0) for report in reports) / total_runs
+    average_recall = sum(float(_report_evals_scores(report).get("recall", 0) or 0) for report in reports) / total_runs
+    average_precision = sum(float(_report_evals_scores(report).get("precision", 0) or 0) for report in reports) / total_runs
     reports_by_document_type: dict[str, int] = {}
+    total_prompt_problems = 0
+    total_ocr_limitations = 0
+    total_uncertain = 0
 
     for report in reports:
         document_type = str(report.get("document_type") or "unknown")
         reports_by_document_type[document_type] = reports_by_document_type.get(document_type, 0) + 1
-        ocr_eval = _report_ocr_eval(report)
-        for field, result in ocr_eval.get("fuzz_result", {}).items():
+        for result in _report_field_comparison(report).values():
             if not isinstance(result, dict):
                 continue
-            score = 1.0 if result.get("status") == "TP" else 0.0
-            field_scores.setdefault(field, []).append(score)
-
-    field_averages = {
-        field: sum(scores) / len(scores) for field, scores in field_scores.items() if scores
-    }
-    worst_field = min(field_averages, key=field_averages.get) if field_averages else ""
-    best_field = max(field_averages, key=field_averages.get) if field_averages else ""
+            ocr_search = result.get("ocr_search") if isinstance(result.get("ocr_search"), dict) else {}
+            if ocr_search.get("verdict") == "PROMPT_PROBLEM":
+                total_prompt_problems += 1
+            if ocr_search.get("verdict") == "OCR_LIMITATION":
+                total_ocr_limitations += 1
+            if result.get("status") in {"GREY", "GREY_UNRESOLVED"} or ocr_search.get("verdict") == "UNCERTAIN":
+                total_uncertain += 1
 
     return {
         "total_runs": total_runs,
         "average_f1": round(average_f1, 4),
         "average_recall": round(average_recall, 4),
         "average_precision": round(average_precision, 4),
-        "worst_field": worst_field,
-        "best_field": best_field,
+        "total_prompt_problems": total_prompt_problems,
+        "total_ocr_limitations": total_ocr_limitations,
+        "total_uncertain": total_uncertain,
         "reports_by_document_type": reports_by_document_type,
+        "worst_field": "",
+        "best_field": "",
     }
 
 
@@ -964,6 +625,26 @@ def get_report(report_name: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Report not found.") from exc
 
 
+@app.delete("/api/evaluations/reports/{report_name}", tags=["evaluations"])
+def delete_report(report_name: str) -> dict[str, Any]:
+    """Delete a saved evaluation report by file name."""
+    results_path = os.getenv("RESULTS_PATH", "").strip()
+    if not results_path:
+        raise HTTPException(status_code=400, detail="RESULTS_PATH is not configured.")
+    report_path = os.path.join(results_path, report_name)
+    results_root = os.path.abspath(results_path)
+    requested_path = os.path.abspath(report_path)
+    if os.path.commonpath([results_root, requested_path]) != results_root:
+        raise HTTPException(status_code=400, detail="Invalid report name.")
+    try:
+        os.remove(requested_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Report not found.") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Unable to delete report.") from exc
+    return {"success": True, "report_name": report_name}
+
+
 FRONTEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend"))
 if os.path.isdir(FRONTEND_DIR):
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIR), name="frontend-assets")
@@ -983,12 +664,15 @@ def frontend_index() -> FileResponse:
 
 def _parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="Run DocsAI OCR evaluation.")
+    parser = argparse.ArgumentParser(description="Run DocsAI field evaluation.")
     parser.add_argument("run_id", help="DocsAI run ID to evaluate.")
-    parser.add_argument("filename", help="Golden dataset filename to match.")
+    parser.add_argument(
+        "golden_fields",
+        help='JSON object of expected field values, e.g. {"invoiceNo":"L2528366"}',
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    run_ocr_eval(args.run_id, args.filename)
+    run_ocr_eval(args.run_id, json.loads(args.golden_fields))

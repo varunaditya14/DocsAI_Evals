@@ -23,7 +23,7 @@ def _round_floats(value: Any) -> Any:
 
 def save_report(
     run_id: str,
-    filename: str,
+    filename: str = "",
     document_type: str | None = None,
     eval_type: str = "full",
     diff_result: dict[str, Any] | None = None,
@@ -34,6 +34,7 @@ def save_report(
     llm_f1: dict[str, Any] | None = None,
     combined_scores: dict[str, Any] | None = None,
     evals_report: dict[str, Any] | None = None,
+    field_report: dict[str, Any] | None = None,
 ) -> str:
     """Save an evaluation report JSON file and return its path."""
     settings = get_settings()
@@ -53,6 +54,22 @@ def save_report(
             f"{run_id}_{timestamp}_{collision_count}_{report_suffix}.json",
         )
         collision_count += 1
+
+    if field_report is not None:
+        payload = dict(field_report)
+        payload.setdefault("run_id", run_id)
+        payload.setdefault("filename", filename or run_id)
+        payload.setdefault("document_type", document_type)
+        payload.setdefault("eval_type", eval_type)
+        payload.setdefault("timestamp", timestamp)
+        payload["report_filename"] = os.path.basename(report_path)
+        try:
+            with open(report_path, "x", encoding="utf-8") as handle:
+                json.dump(_round_floats(payload), handle, ensure_ascii=False, indent=2)
+        except OSError as exc:
+            raise RuntimeError(f"Unable to save report file: {report_path}") from exc
+        return report_path
+
     overall_scores = evals_report or combined_scores or ocr_score or llm_f1 or {}
     payload = {
         "run_id": run_id,
