@@ -177,6 +177,42 @@ def _multiple_document_warning(llm_output: Any) -> str | None:
     return None
 
 
+def _is_scalar_row_table(value: Any) -> bool:
+    """Return True when a value is a list of flat row dictionaries."""
+    if not isinstance(value, list) or not value or not isinstance(value[0], dict):
+        return False
+    return all(not isinstance(nested, (dict, list)) for nested in value[0].values())
+
+
+def _collect_table_fields(value: Any) -> dict[str, list[dict[str, Any]]]:
+    """Collect nested list-of-dict table fields from a DocsAI LLM output."""
+    tables: dict[str, list[dict[str, Any]]] = {}
+    normalized = normalize_keys_to_camel(value) if isinstance(value, (dict, list)) else value
+    if isinstance(normalized, list):
+        for item in normalized[:1]:
+            tables.update(_collect_table_fields(item))
+        return tables
+    if not isinstance(normalized, dict):
+        return tables
+
+    for key, nested_value in normalized.items():
+        if key == "extractedFields":
+            continue
+        if _is_scalar_row_table(nested_value):
+            tables[key] = [row for row in nested_value if isinstance(row, dict)]
+            continue
+        if isinstance(nested_value, (dict, list)):
+            tables.update(_collect_table_fields(nested_value))
+    return tables
+
+
+def _merge_extracted_fields(llm_output: Any, document_type: str) -> dict[str, Any]:
+    """Return scalar extracted fields plus table fields from the raw DocsAI payload."""
+    extracted_fields = extract_ocr_fields(llm_output, document_type)
+    table_fields = _collect_table_fields(llm_output)
+    return {**extracted_fields, **table_fields}
+
+
 def _extract_fields_from_run(run_data: dict[str, Any]) -> tuple[str, dict[str, Any], str | None]:
     """Return document type, extracted fields, and optional multi-object warning."""
     llm_output = run_data.get("llm_output")
@@ -189,7 +225,7 @@ def _extract_fields_from_run(run_data: dict[str, Any]) -> tuple[str, dict[str, A
             ),
         )
     document_type = _detect_document_type(llm_output)
-    extracted_fields = extract_ocr_fields(llm_output, document_type)
+    extracted_fields = _merge_extracted_fields(llm_output, document_type)
     if not extracted_fields:
         raise HTTPException(
             status_code=422,
@@ -201,15 +237,25 @@ def _extract_fields_from_run(run_data: dict[str, Any]) -> tuple[str, dict[str, A
     return document_type, extracted_fields, _multiple_document_warning(llm_output)
 
 
-def _validate_and_sanitize_golden_fields(golden_fields: dict[str, Any]) -> dict[str, str]:
-    """Validate user-entered fields and return sanitized string values."""
+def _sanitize_table_rows(rows: list[Any]) -> list[dict[str, str]]:
+    """Sanitize a table value while preserving row and column structure."""
+    sanitized_rows: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        sanitized_rows.append({str(column).strip(): sanitize_field_value(value) for column, value in row.items()})
+    return sanitized_rows
+
+
+def _validate_and_sanitize_golden_fields(golden_fields: dict[str, Any]) -> dict[str, Any]:
+    """Validate user-entered fields and return sanitized scalar or table values."""
     if not isinstance(golden_fields, dict) or not golden_fields:
         raise HTTPException(
             status_code=400,
             detail="No fields entered. Add at least one expected field value to run evaluation.",
         )
 
-    sanitized: dict[str, str] = {}
+    sanitized: dict[str, Any] = {}
     for field, value in golden_fields.items():
         validation = validate_field_name(field)
         if not validation["valid"]:
@@ -217,15 +263,29 @@ def _validate_and_sanitize_golden_fields(golden_fields: dict[str, Any]) -> dict[
                 status_code=400,
                 detail={"field": field, "message": validation["error"]},
             )
-        sanitized[str(field).strip()] = sanitize_field_value(value)
+        if isinstance(value, list):
+            sanitized[str(field).strip()] = _sanitize_table_rows(value)
+        else:
+            sanitized[str(field).strip()] = sanitize_field_value(value)
     return sanitized
 
 
 def _calculate_f1(results: dict[str, dict[str, Any]]) -> dict[str, float | int]:
     """Calculate precision, recall, and F1 from new field statuses."""
-    tp = sum(1 for result in results.values() if result.get("status") == "TP")
-    fp = sum(1 for result in results.values() if result.get("status") in ("FP", "EXTRA"))
-    fn = sum(1 for result in results.values() if result.get("status") == "FN")
+    tp = 0
+    fp = 0
+    fn = 0
+    for result in results.values():
+        line_items = result.get("line_items")
+        if isinstance(line_items, dict) and isinstance(line_items.get("f1_counts"), dict):
+            counts = line_items["f1_counts"]
+            tp += int(counts.get("tp", 0) or 0)
+            fp += int(counts.get("fp", 0) or 0)
+            fn += int(counts.get("fn", 0) or 0)
+            continue
+        tp += 1 if result.get("status") == "TP" else 0
+        fp += 1 if result.get("status") in ("FP", "EXTRA") else 0
+        fn += 1 if result.get("status") == "FN" else 0
     precision = tp / (tp + fp) if tp + fp else 0.0
     recall = tp / (tp + fn) if tp + fn else 0.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
@@ -265,7 +325,7 @@ def _recommended_actions(results: dict[str, dict[str, Any]]) -> list[dict[str, s
                     ),
                 }
             )
-        elif result.get("status") == "FN" and not ocr_search:
+        elif result.get("status") in {"FN", "PARTIAL"} and not ocr_search:
             actions.append(
                 {
                     "field": field_name,
@@ -294,7 +354,7 @@ def _summarize_report(results: dict[str, dict[str, Any]]) -> dict[str, int]:
     return {
         "total_fields": len(results),
         "passed": sum(1 for result in results.values() if result.get("status") == "TP"),
-        "failed": sum(1 for result in results.values() if result.get("status") in ("FP", "EXTRA")),
+        "failed": sum(1 for result in results.values() if result.get("status") in ("FP", "EXTRA", "PARTIAL")),
         "missing": sum(1 for result in results.values() if result.get("status") == "FN"),
         "uncertain_resolved": uncertain_resolved,
         "uncertain_unresolved": uncertain_unresolved,
@@ -332,7 +392,7 @@ def run_ocr_eval(run_id: str, golden_fields: dict[str, Any], eval_type: str = "f
         failed_fields = [
             field
             for field, result in results.items()
-            if result["status"] in ("FP", "FN") and result["golden_value"] != ""
+            if result["status"] in ("FP", "FN", "PARTIAL") and result["golden_value"] != ""
         ]
         for field in failed_fields:
             results[field]["ocr_search"] = llm_ocr_searcher(
@@ -430,6 +490,19 @@ def _report_field_comparison(report: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _field_value_metadata(value: Any) -> dict[str, Any]:
+    """Return frontend entry-mode metadata for an extracted field value."""
+    if isinstance(value, list) and value and isinstance(value[0], dict):
+        return {
+            "field_value_type": "table",
+            "field_schema": list(value[0].keys()),
+            "row_count": len(value),
+        }
+    if isinstance(value, str) and "\n" in value:
+        return {"field_value_type": "text_block"}
+    return {"field_value_type": "simple"}
+
+
 @app.get("/api/health", tags=["health"])
 def health() -> dict[str, Any]:
     """Return API health status."""
@@ -514,12 +587,16 @@ def get_run_fields(run_id: str) -> dict[str, Any]:
             ),
         )
     document_type = _detect_document_type(llm_output)
-    extracted_fields = extract_ocr_fields(llm_output, document_type)
+    extracted_fields = _merge_extracted_fields(llm_output, document_type)
     warning = _multiple_document_warning(llm_output)
     response = {
         "document_type": document_type,
         "extracted_fields": extracted_fields,
         "field_count": len(extracted_fields),
+        "field_metadata": {
+            field_name: _field_value_metadata(field_value)
+            for field_name, field_value in extracted_fields.items()
+        },
     }
     if warning:
         response["warning"] = warning

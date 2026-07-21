@@ -1,5 +1,7 @@
 const FIELD_NAME_PATTERN = /^[a-z][a-zA-Z0-9]*$/;
 const MAX_FIELDS = 30;
+const MAX_TABLE_COLUMNS = 10;
+const MAX_TABLE_ROWS = 50;
 const RESTORE_PREFIX = "docsai-evals:";
 const progressMessages = [
   "Fetching run output...",
@@ -13,6 +15,7 @@ const state = {
   reports: [],
   reportCache: new Map(),
   extractedFields: {},
+  fieldMetadata: {},
   documentType: "",
   latestReport: null,
   currentRunReport: null,
@@ -57,6 +60,7 @@ const els = {
   detectedFieldCount: $("#detectedFieldCount"),
   fieldRows: $("#fieldRows"),
   addFieldButton: $("#addFieldButton"),
+  fieldTypePicker: $("#fieldTypePicker"),
   extractedHintsPanel: $("#extractedHintsPanel"),
   extractedFieldPills: $("#extractedFieldPills"),
   runStatus: $("#runStatus"),
@@ -292,6 +296,7 @@ function statusClass(status) {
   if (["TP", "PASS"].includes(normalized)) return "completed";
   if (["FP", "FAIL", "EXTRA"].includes(normalized)) return "failed";
   if (["FN", "MISSING"].includes(normalized)) return "missing";
+  if (normalized === "PARTIAL") return "partial";
   if (["GREY", "GREY_UNRESOLVED", "UNCERTAIN", "EXTRA_INFO"].includes(normalized)) return "unresolved";
   return "partial";
 }
@@ -303,6 +308,7 @@ function statusLabel(status) {
   if (normalized === "FN") return "MISSING";
   if (normalized === "GREY" || normalized === "GREY_UNRESOLVED") return "UNCERTAIN";
   if (normalized === "EXTRA_INFO") return "EXTRA INFO";
+  if (normalized === "PARTIAL") return "PARTIAL";
   return normalized || "PARTIAL";
 }
 
@@ -329,46 +335,59 @@ function showSection(sectionName) {
   els.navItems.forEach((item) => item.classList.toggle("active", item.dataset.section === sectionName));
 }
 
-function fieldRowsData() {
-  return $$(".field-entry-row").map((row) => ({
-    row,
-    nameInput: row.querySelector("[data-field-name]"),
-    valueInput: row.querySelector("[data-field-value]"),
-    error: row.querySelector("[data-field-error]"),
-    warning: row.querySelector("[data-field-warning]"),
-  }));
+function entryNodes() {
+  return $$(".field-entry");
 }
 
-function validateFieldRow(rowData, showEmptyWarning = false) {
-  const name = rowData.nameInput.value.trim();
-  const value = rowData.valueInput.value;
-  const isEmpty = name === "";
-  const isValid = FIELD_NAME_PATTERN.test(name);
-  rowData.nameInput.classList.toggle("invalid", !isEmpty && !isValid);
-  rowData.nameInput.classList.toggle("valid", isValid);
-  rowData.error.hidden = isEmpty || isValid;
-  rowData.warning.hidden = !(showEmptyWarning && isValid && value.trim() === "");
-  return isValid;
+function entryCount() {
+  return entryNodes().length;
 }
 
-function updateRunButtonState() {
-  const hasRunId = els.runId.value.trim().length > 0;
-  const hasValidRow = fieldRowsData().some((rowData) => validateFieldRow(rowData, false));
-  els.runButton.disabled = !(hasRunId && hasValidRow);
-  els.addFieldButton.disabled = fieldRowsData().length >= MAX_FIELDS;
+function inputValidClass(input, isValid, isEmpty) {
+  input.classList.toggle("invalid", !isEmpty && !isValid);
+  input.classList.toggle("valid", false);
 }
 
-function addFieldRow(name = "", value = "") {
-  if (fieldRowsData().length >= MAX_FIELDS) {
-    showToast("Maximum 30 fields per evaluation");
-    return;
+function validateNameInput(input, errorElement, message = "camelCase only - e.g. invoiceNo, totalAmount", showError = true) {
+  const value = input.value.trim();
+  const isEmpty = value === "";
+  const isValid = FIELD_NAME_PATTERN.test(value);
+  inputValidClass(input, isValid, isEmpty);
+  if (errorElement) {
+    errorElement.textContent = message;
+    errorElement.hidden = !showError || isEmpty || isValid;
   }
+  return { value, isEmpty, isValid };
+}
+
+function autoGrowTextarea(textarea) {
+  textarea.style.height = "auto";
+  textarea.style.height = `${Math.max(textarea.scrollHeight, 96)}px`;
+}
+
+function removeEntry(entry) {
+  entry.remove();
+  if (!entryNodes().length) addSimpleFieldRow();
+  updateRunButtonState();
+}
+
+function ensureEntryLimit() {
+  if (entryCount() >= MAX_FIELDS) {
+    showToast("Maximum 30 fields per evaluation");
+    return false;
+  }
+  return true;
+}
+
+function addSimpleFieldRow(name = "", value = "") {
+  if (!ensureEntryLimit()) return;
   const row = document.createElement("div");
-  row.className = "field-entry-row";
+  row.className = "field-entry field-entry-row";
+  row.dataset.entryType = "simple";
   row.innerHTML = `
     <div class="field-input-wrap">
       <input data-field-name type="text" placeholder="fieldName" value="${escapeHtml(name)}" autocomplete="off" />
-      <small data-field-error class="field-error" hidden>Use camelCase: no underscores or spaces</small>
+      <small data-field-error class="field-error" hidden>camelCase only - e.g. invoiceNo, totalAmount</small>
     </div>
     <div class="field-input-wrap">
       <input data-field-value type="text" placeholder="expected value" value="${escapeHtml(value)}" />
@@ -381,28 +400,298 @@ function addFieldRow(name = "", value = "") {
   els.fieldRows.appendChild(row);
   row.querySelector("[data-field-name]").addEventListener("input", updateRunButtonState);
   row.querySelector("[data-field-value]").addEventListener("input", updateRunButtonState);
-  row.querySelector(".remove-field").addEventListener("click", () => {
-    row.remove();
-    if (!fieldRowsData().length) addFieldRow();
-    updateRunButtonState();
-  });
+  row.querySelector(".remove-field").addEventListener("click", () => removeEntry(row));
   updateRunButtonState();
 }
 
-function collectGoldenFields(showWarnings = false) {
-  const fields = {};
-  let validCount = 0;
-  fieldRowsData().forEach((rowData) => {
-    const name = rowData.nameInput.value.trim();
-    const isValid = validateFieldRow(rowData, showWarnings);
-    if (!name || !isValid) return;
-    fields[name] = rowData.valueInput.value.trim();
-    validCount += 1;
+function addTextBlockRow(name = "", value = "") {
+  if (!ensureEntryLimit()) return;
+  const row = document.createElement("div");
+  row.className = "field-entry text-block-row";
+  row.dataset.entryType = "text_block";
+  row.innerHTML = `
+    <div class="field-input-wrap text-block-name">
+      <input data-field-name type="text" placeholder="fieldName" value="${escapeHtml(name)}" autocomplete="off" />
+      <small data-field-error class="field-error" hidden>camelCase only - e.g. invoiceNo, totalAmount</small>
+    </div>
+    <div class="field-input-wrap text-block-value">
+      <textarea data-field-value rows="3" placeholder="Enter multiline value...">${escapeHtml(value)}</textarea>
+    </div>
+    <button class="icon-button muted remove-field" type="button" title="Remove field" aria-label="Remove field">
+      <span class="ti ti-x"></span>
+    </button>
+  `;
+  els.fieldRows.appendChild(row);
+  const textarea = row.querySelector("textarea");
+  row.querySelector("[data-field-name]").addEventListener("input", updateRunButtonState);
+  textarea.addEventListener("input", () => {
+    autoGrowTextarea(textarea);
+    updateRunButtonState();
   });
-  return { fields, validCount };
+  row.querySelector(".remove-field").addEventListener("click", () => removeEntry(row));
+  autoGrowTextarea(textarea);
+  updateRunButtonState();
 }
 
-function renderExtractedHints(fields) {
+function tableColumns(table) {
+  return Array.from(table.querySelectorAll("[data-column-name]")).map((input) => input.value.trim());
+}
+
+function tableRows(table) {
+  return Array.from(table.querySelectorAll(".table-data-row")).map((row) => {
+    return Array.from(row.querySelectorAll("[data-cell]")).map((input) => input.value.trim());
+  });
+}
+
+function rebuildTableRows(table, existingRows = tableRows(table)) {
+  const columns = tableColumns(table);
+  const labels = table.querySelector("[data-table-column-labels]");
+  const rowsContainer = table.querySelector("[data-table-rows]");
+  labels.innerHTML = columns.map((column) => `<span>${escapeHtml(column || "Column")}</span>`).join("");
+  labels.hidden = columns.length === 0;
+  rowsContainer.innerHTML = "";
+  existingRows.forEach((rowValues) => addTableDataRow(table, rowValues, false));
+  table.querySelector("[data-add-row]").disabled = columns.length === 0 || tableRows(table).length >= MAX_TABLE_ROWS;
+}
+
+function addTableColumn(table, columnName = "") {
+  const columnsContainer = table.querySelector("[data-table-columns]");
+  if (columnsContainer.querySelectorAll("[data-column-name]").length >= MAX_TABLE_COLUMNS) {
+    showToast("Maximum 10 columns per table");
+    return;
+  }
+  const existingRows = tableRows(table);
+  const column = document.createElement("div");
+  column.className = "table-column-input";
+  column.innerHTML = `
+    <input data-column-name type="text" placeholder="columnName (e.g. description)" value="${escapeHtml(columnName)}" />
+    <button class="icon-button muted" type="button" title="Remove column" aria-label="Remove column">
+      <span class="ti ti-x"></span>
+    </button>
+    <small data-column-error class="field-error" hidden>camelCase only - e.g. invoiceNo, totalAmount</small>
+  `;
+  columnsContainer.appendChild(column);
+  const input = column.querySelector("[data-column-name]");
+  input.addEventListener("input", () => {
+    rebuildTableRows(table);
+    updateRunButtonState();
+  });
+  column.querySelector("button").addEventListener("click", () => {
+    const columnIndex = Array.from(columnsContainer.children).indexOf(column);
+    const currentRows = tableRows(table);
+    column.remove();
+    const adjustedRows = currentRows.map((row) => row.filter((_cell, index) => index !== columnIndex));
+    rebuildTableRows(table, adjustedRows);
+    updateRunButtonState();
+  });
+  rebuildTableRows(table, existingRows);
+  updateRunButtonState();
+}
+
+function addTableDataRow(table, values = [], shouldUpdate = true) {
+  const columns = tableColumns(table);
+  if (!columns.length) {
+    showToast("Add at least one column first");
+    return;
+  }
+  if (tableRows(table).length >= MAX_TABLE_ROWS) {
+    showToast("Maximum 50 rows per table");
+    return;
+  }
+  const row = document.createElement("div");
+  row.className = "table-data-row";
+  row.innerHTML = `
+    ${columns
+      .map((column, index) => `<input data-cell type="text" placeholder="${escapeHtml(column || "value")}" value="${escapeHtml(values[index] || "")}" />`)
+      .join("")}
+    <button class="icon-button muted" type="button" title="Remove row" aria-label="Remove row">
+      <span class="ti ti-x"></span>
+    </button>
+  `;
+  table.querySelector("[data-table-rows]").appendChild(row);
+  row.querySelectorAll("[data-cell]").forEach((input) => input.addEventListener("input", updateRunButtonState));
+  row.querySelector("button").addEventListener("click", () => {
+    row.remove();
+    updateRunButtonState();
+  });
+  if (shouldUpdate) updateRunButtonState();
+}
+
+function addLineItemsTable(entry = {}) {
+  if (!ensureEntryLimit()) return;
+  const table = document.createElement("div");
+  table.className = "field-entry table-entry-card";
+  table.dataset.entryType = "line_items";
+  table.innerHTML = `
+    <div class="table-entry-header">
+      <span class="table-badge">TABLE</span>
+      <div class="field-input-wrap table-name-wrap">
+        <input data-field-name type="text" placeholder="lineItems" value="${escapeHtml(entry.fieldName || "")}" autocomplete="off" />
+        <small data-field-error class="field-error" hidden>camelCase only - e.g. invoiceNo, totalAmount</small>
+      </div>
+      <button data-add-column class="secondary-button" type="button">
+        <span class="ti ti-plus" aria-hidden="true"></span>
+        Add column
+      </button>
+      <button class="icon-button muted remove-field" type="button" title="Remove table" aria-label="Remove table">
+        <span class="ti ti-x"></span>
+      </button>
+    </div>
+    <div data-table-warning class="field-warning" hidden></div>
+    <div data-table-columns class="table-columns-row"></div>
+    <div data-table-column-labels class="table-column-labels"></div>
+    <div data-table-rows class="table-rows"></div>
+    <button data-add-row class="table-add-row-btn secondary-button" type="button">+ Add row</button>
+  `;
+  els.fieldRows.appendChild(table);
+  table.querySelector("[data-field-name]").addEventListener("input", updateRunButtonState);
+  table.querySelector("[data-add-column]").addEventListener("click", () => addTableColumn(table));
+  table.querySelector("[data-add-row]").addEventListener("click", () => addTableDataRow(table));
+  table.querySelector(".remove-field").addEventListener("click", () => removeEntry(table));
+  (entry.columns || []).forEach((column) => addTableColumn(table, column));
+  (entry.rows || []).forEach((row) => addTableDataRow(table, row, false));
+  updateRunButtonState();
+}
+
+function addFieldRow(name = "", value = "") {
+  addSimpleFieldRow(name, value);
+}
+
+function addEntryByType(type, data = {}) {
+  if (type === "text_block") {
+    addTextBlockRow(data.fieldName || data.name || "", data.value || "");
+  } else if (type === "line_items") {
+    addLineItemsTable(data);
+  } else {
+    addSimpleFieldRow(data.fieldName || data.name || "", data.value || "");
+  }
+}
+
+function entryHasContent(entry) {
+  if (entry.dataset.entryType === "line_items") {
+    return Boolean(
+      entry.querySelector("[data-field-name]").value.trim()
+        || tableColumns(entry).some(Boolean)
+        || tableRows(entry).flat().some(Boolean),
+    );
+  }
+  return Boolean(
+    entry.querySelector("[data-field-name]").value.trim()
+      || entry.querySelector("[data-field-value]").value.trim(),
+  );
+}
+
+function hasSubmittableEntry() {
+  return entryNodes().some((entry) => {
+    const name = entry.querySelector("[data-field-name]").value.trim();
+    return FIELD_NAME_PATTERN.test(name);
+  });
+}
+
+function updateRunButtonState() {
+  const hasRunId = els.runId.value.trim().length > 0;
+  entryNodes().forEach((entry) => {
+    const error = entry.querySelector("[data-field-error]");
+    validateNameInput(entry.querySelector("[data-field-name]"), error, undefined, false);
+  });
+  els.runButton.disabled = !(hasRunId && hasSubmittableEntry());
+  els.addFieldButton.disabled = entryCount() >= MAX_FIELDS;
+}
+
+function collectGoldenFields(showErrors = false) {
+  const fields = {};
+  const entries = [];
+  const errors = [];
+  const warnings = [];
+  const names = new Set();
+
+  entryNodes().forEach((entry) => {
+    const type = entry.dataset.entryType || "simple";
+    const nameInput = entry.querySelector("[data-field-name]");
+    const fieldError = entry.querySelector("[data-field-error]");
+    const nameResult = validateNameInput(nameInput, fieldError, undefined, showErrors);
+    const name = nameResult.value;
+
+    if (!name && type !== "line_items") return;
+    if (!name && !entryHasContent(entry)) return;
+    if (!name && entryHasContent(entry)) {
+      errors.push("Field name is required for entries with values");
+      if (fieldError) {
+        fieldError.textContent = "Field name is required";
+        fieldError.hidden = false;
+      }
+      return;
+    }
+    if (!nameResult.isValid) {
+      errors.push(`${name || "Field name"} must be camelCase`);
+      return;
+    }
+    if (names.has(name)) {
+      errors.push(`Field name ${name} is used more than once`);
+      if (fieldError) {
+        fieldError.textContent = `Field name ${name} is used more than once`;
+        fieldError.hidden = false;
+      }
+      return;
+    }
+    names.add(name);
+
+    if (type === "line_items") {
+      const warning = entry.querySelector("[data-table-warning]");
+      const columns = tableColumns(entry);
+      const validColumns = [];
+      let hasColumnError = false;
+      entry.querySelectorAll("[data-column-name]").forEach((input) => {
+        const error = input.parentElement.querySelector("[data-column-error]");
+        const result = validateNameInput(input, error, undefined, showErrors);
+        if (showErrors && result.isEmpty && error) {
+          error.textContent = "Column name is required";
+          error.hidden = false;
+        }
+        if (!result.isValid) hasColumnError = true;
+        validColumns.push(result.value);
+      });
+      if (!columns.length) {
+        errors.push(`${name}: Add at least one column`);
+        if (warning) {
+          warning.textContent = "Add at least one column";
+          warning.hidden = false;
+        }
+        return;
+      }
+      if (hasColumnError) {
+        errors.push(`${name}: column names must be camelCase`);
+        return;
+      }
+
+      const rows = tableRows(entry).filter((row) => row.some((cell) => cell.trim() !== ""));
+      if (!rows.length) {
+        const message = `Table ${name} has no rows - it will check only that the field exists in extraction output`;
+        warnings.push(message);
+        if (warning) {
+          warning.textContent = message;
+          warning.hidden = false;
+        }
+      } else if (warning) {
+        warning.hidden = true;
+      }
+      fields[name] = rows.map((row) => Object.fromEntries(validColumns.map((column, index) => [column, row[index] || ""])));
+      entries.push({ type: "line_items", fieldName: name, columns: validColumns, rows });
+      return;
+    }
+
+    const value = entry.querySelector("[data-field-value]").value.trim();
+    const warning = entry.querySelector("[data-field-warning]");
+    if (warning) warning.hidden = !(showErrors && value === "");
+    fields[name] = value;
+    entries.push({ type, fieldName: name, value });
+  });
+
+  if (!entries.length) errors.push("Add at least one field to evaluate");
+  return { fields, entries, errors, warnings, validCount: entries.length };
+}
+
+function renderExtractedHints(fields, metadata = {}) {
   const entries = Object.entries(fields || {});
   if (!entries.length) {
     setBanner(els.runFieldsMessage, "No fields detected in this run. The extraction step may not have produced output.", "error");
@@ -411,7 +700,20 @@ function renderExtractedHints(fields) {
   }
   els.extractedFieldPills.innerHTML = entries
     .map(([field, value]) => {
-      return `<button class="field-pill" type="button" data-field="${escapeHtml(field)}" title="${escapeHtml(value)}">${escapeHtml(field)}</button>`;
+      const fieldMeta = metadata[field] || {};
+      if (fieldMeta.field_value_type === "table") {
+        const columns = fieldMeta.field_schema || [];
+        return `
+          <article class="table-hint-card">
+            <strong>This run has a table field: ${escapeHtml(field)}</strong>
+            <span>${Number(fieldMeta.row_count || 0)} rows, columns: ${escapeHtml(columns.join(", ") || "-")}</span>
+            <button class="secondary-button" type="button" data-table-hint="${escapeHtml(field)}">Add as table</button>
+          </article>
+        `;
+      }
+      const type = fieldMeta.field_value_type === "text_block" ? "text_block" : "simple";
+      const title = typeof value === "string" ? value : JSON.stringify(value);
+      return `<button class="field-pill" type="button" data-field="${escapeHtml(field)}" data-entry-type="${type}" title="${escapeHtml(title)}">${escapeHtml(field)}</button>`;
     })
     .join("");
   els.extractedHintsPanel.hidden = false;
@@ -438,9 +740,13 @@ function restoreSessionFields() {
   const raw = sessionStorage.getItem(key);
   if (!raw) return;
   try {
-    const fields = JSON.parse(raw);
+    const savedEntries = JSON.parse(raw);
     els.fieldRows.innerHTML = "";
-    Object.entries(fields).forEach(([field, value]) => addFieldRow(field, value));
+    if (Array.isArray(savedEntries)) {
+      savedEntries.forEach((entry) => addEntryByType(entry.type || "simple", entry));
+    } else {
+      Object.entries(savedEntries).forEach(([field, value]) => addFieldRow(field, value));
+    }
     els.restorePrompt.hidden = true;
     showToast("Previous values restored");
   } catch {
@@ -459,15 +765,17 @@ async function loadRunFields() {
   try {
     const payload = await api.runFields(runId);
     state.extractedFields = payload.extracted_fields || {};
+    state.fieldMetadata = payload.field_metadata || {};
     state.documentType = payload.document_type || "unknown";
     setText(els.detectedDocType, state.documentType);
     setText(els.detectedFieldCount, payload.field_count ?? Object.keys(state.extractedFields).length);
     els.detectedPanel.hidden = false;
-    renderExtractedHints(state.extractedFields);
+    renderExtractedHints(state.extractedFields, state.fieldMetadata);
     const message = payload.warning ? `Loaded fields. ${payload.warning}` : "Run fields loaded.";
     setBanner(els.runFieldsMessage, message, "success");
   } catch (error) {
     state.extractedFields = {};
+    state.fieldMetadata = {};
     state.documentType = "";
     els.detectedPanel.hidden = true;
     els.extractedHintsPanel.hidden = true;
@@ -528,15 +836,16 @@ function renderRunResult(report) {
 async function runEvaluation(event) {
   event.preventDefault();
   clearBanner(els.runMessage);
-  const { fields, validCount } = collectGoldenFields(true);
+  const { fields, entries, errors, warnings, validCount } = collectGoldenFields(true);
   if (!els.runId.value.trim()) {
     setBanner(els.runMessage, "Enter a DocsAI Run ID before running evaluation.", "error");
     return;
   }
-  if (!validCount) {
-    setBanner(els.runMessage, "Add at least one valid camelCase field.", "error");
+  if (errors.length) {
+    setBanner(els.runMessage, errors.join(" | "), "error");
     return;
   }
+  if (warnings.length) setBanner(els.runMessage, warnings.join(" | "), "success");
   els.runStatus.textContent = "RUNNING";
   els.runStatus.className = "status-pill partial";
   setButtonLoading(els.runButton, true, "Running...");
@@ -544,7 +853,7 @@ async function runEvaluation(event) {
   try {
     const runId = els.runId.value.trim();
     const report = await api.runEvaluation({ run_id: runId, golden_fields: fields });
-    saveSessionFields(runId, fields);
+    saveSessionFields(runId, entries);
     rememberCurrentRun(report);
     renderRunResult(report);
     renderLatest(report);
@@ -804,7 +1113,7 @@ function renderActions(report) {
 function fieldGroup(status) {
   const normalized = String(status || "").toUpperCase();
   if (normalized === "TP") return "passed";
-  if (["FP", "EXTRA"].includes(normalized)) return "failed";
+  if (["FP", "EXTRA", "PARTIAL"].includes(normalized)) return "failed";
   if (normalized === "FN") return "missing";
   if (["GREY", "GREY_UNRESOLVED", "EXTRA_INFO"].includes(normalized)) return "uncertain";
   return "uncertain";
@@ -860,8 +1169,92 @@ function renderOcrSearch(result) {
   `;
 }
 
+function lineItemColumns(result) {
+  const rowResults = result.line_items?.row_results || [];
+  if (rowResults[0]?.column_results) return Object.keys(rowResults[0].column_results);
+  if (Array.isArray(result.golden_value) && result.golden_value[0]) return Object.keys(result.golden_value[0]);
+  if (Array.isArray(result.extracted_value) && result.extracted_value[0]) return Object.keys(result.extracted_value[0]);
+  return [];
+}
+
+function lineItemCellClass(status) {
+  const normalized = String(status || "").toUpperCase();
+  if (normalized === "TP") return "cell-tp";
+  if (normalized === "GREY") return "cell-grey";
+  return "cell-fp";
+}
+
+function renderLineItemsField(field, result) {
+  const lineItems = result.line_items || {};
+  const columns = lineItemColumns(result);
+  const rowResults = lineItems.row_results || [];
+  const passedRows = rowResults.filter((row) => row.row_status === "PASS").length;
+  const totalRows = Number(lineItems.total_golden_rows ?? rowResults.length);
+  return `
+    <article class="field-detail-row line-items-field ${statusClass(result.status)}">
+      <details>
+        <summary>
+          <strong>${escapeHtml(field)} - ${passedRows}/${totalRows} rows passed</strong>
+          ${statusPill(result.status)}
+        </summary>
+        <div class="line-items-result-wrap">
+          <table class="line-items-result-table">
+            <thead>
+              <tr>
+                <th>Row #</th>
+                ${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${
+                rowResults.length
+                  ? rowResults
+                      .map((row, index) => {
+                        return `
+                          <tr>
+                            <td>${index + 1}</td>
+                            ${columns
+                              .map((column) => {
+                                const cell = row.column_results?.[column] || {};
+                                return `
+                                  <td class="${lineItemCellClass(cell.status)}">
+                                    <span>${escapeHtml(cell.golden_value ?? "")}</span>
+                                    <small>${escapeHtml(cell.extracted_value ?? "")}</small>
+                                  </td>
+                                `;
+                              })
+                              .join("")}
+                            <td><span class="row-status-badge ${String(row.row_status || "FAIL").toLowerCase()}">${escapeHtml(row.row_status || "FAIL")}</span></td>
+                          </tr>
+                        `;
+                      })
+                      .join("")
+                  : `<tr><td colspan="${columns.length + 2}" class="empty-row">No matched rows</td></tr>`
+              }
+            </tbody>
+          </table>
+        </div>
+        <div class="line-items-footnotes">
+          ${
+            Number(lineItems.missing_rows || 0)
+              ? `<span>${Number(lineItems.missing_rows || 0)} rows in golden not found in extraction</span>`
+              : ""
+          }
+          ${
+            Number(lineItems.extra_rows || 0)
+              ? `<span>${Number(lineItems.extra_rows || 0)} rows extracted not in golden</span>`
+              : ""
+          }
+        </div>
+        ${renderOcrSearch(result)}
+      </details>
+    </article>
+  `;
+}
+
 function renderFieldDetails(fields) {
-  const order = { FN: 0, FP: 1, EXTRA: 1, GREY: 2, GREY_UNRESOLVED: 2, EXTRA_INFO: 2, TP: 3 };
+  const order = { FN: 0, FP: 1, EXTRA: 1, PARTIAL: 1, GREY: 2, GREY_UNRESOLVED: 2, EXTRA_INFO: 2, TP: 3 };
   const rows = Object.entries(fields)
     .filter(([, result]) => state.activeFieldFilter === "all" || fieldGroup(result?.status) === state.activeFieldFilter)
     .sort((a, b) => (order[a[1]?.status] ?? 4) - (order[b[1]?.status] ?? 4) || a[0].localeCompare(b[0]));
@@ -871,6 +1264,9 @@ function renderFieldDetails(fields) {
   }
   els.fieldDetailsList.innerHTML = rows
     .map(([field, result]) => {
+      if (result.field_type === "line_items" || result.line_items) {
+        return renderLineItemsField(field, result);
+      }
       const judge = result.llm_judge
         ? `<span class="small-tag">LLM resolved: ${escapeHtml(result.llm_judge.verdict || "-")}</span>`
         : "";
@@ -979,17 +1375,33 @@ function wireNavigation() {
 }
 
 function wireEvaluationForm() {
-  addFieldRow();
+  addSimpleFieldRow();
   els.loadFieldsButton.addEventListener("click", loadRunFields);
-  els.addFieldButton.addEventListener("click", () => addFieldRow());
+  els.addFieldButton.addEventListener("click", () => {
+    addSimpleFieldRow();
+    els.fieldTypePicker.hidden = !els.fieldTypePicker.hidden;
+  });
+  els.fieldTypePicker.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-entry-type]");
+    if (!button) return;
+    addEntryByType(button.dataset.entryType);
+    els.fieldTypePicker.hidden = true;
+  });
   els.evalForm.addEventListener("submit", runEvaluation);
   els.extractedFieldPills.addEventListener("click", (event) => {
+    const tableButton = event.target.closest("[data-table-hint]");
+    if (tableButton) {
+      const fieldName = tableButton.dataset.tableHint;
+      const meta = state.fieldMetadata[fieldName] || {};
+      addLineItemsTable({ fieldName, columns: meta.field_schema || [], rows: [] });
+      return;
+    }
     const pill = event.target.closest("[data-field]");
     if (!pill) return;
-    addFieldRow(pill.dataset.field, "");
+    addEntryByType(pill.dataset.entryType || "simple", { fieldName: pill.dataset.field, value: "" });
   });
   els.runId.addEventListener("input", () => {
-    const hasEntries = fieldRowsData().some((row) => row.nameInput.value.trim() || row.valueInput.value.trim());
+    const hasEntries = entryNodes().some((entry) => entryHasContent(entry));
     if (!els.runId.value.trim() && hasEntries) {
       setBanner(els.runFieldsMessage, "Clearing run ID will keep your field entries. Change the run ID to re-run with new data.", "error");
     } else {

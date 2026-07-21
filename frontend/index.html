@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DocsAI Evals Portal</title>
-    <link rel="stylesheet" href="/assets/styles.css?v=20260720-centered-run-flow" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260720-field-entry-modes" />
   </head>
   <body>
     <header class="topbar">
@@ -154,6 +154,23 @@
                   <span class="ti ti-plus" aria-hidden="true"></span>
                   Add field
                 </button>
+                <div id="fieldTypePicker" class="field-type-picker" hidden>
+                  <button class="field-type-btn" type="button" data-entry-type="simple">
+                    <span class="ti ti-text-size" aria-hidden="true"></span>
+                    <strong>Simple field</strong>
+                    <small>invoiceNo, date, terms</small>
+                  </button>
+                  <button class="field-type-btn" type="button" data-entry-type="text_block">
+                    <span class="ti ti-align-left" aria-hidden="true"></span>
+                    <strong>Text block</strong>
+                    <small>billTo, deliveryTo, notes</small>
+                  </button>
+                  <button class="field-type-btn" type="button" data-entry-type="line_items">
+                    <span class="ti ti-table" aria-hidden="true"></span>
+                    <strong>Line items table</strong>
+                    <small>items, products, lineItems</small>
+                  </button>
+                </div>
               </section>
 
               <details id="extractedHintsPanel" class="hint-panel" hidden>
@@ -372,6 +389,6 @@
       </section>
     </div>
 
-    <script src="/assets/app.js?v=20260720-centered-run-flow"></script>
+    <script src="/assets/app.js?v=20260720-field-entry-modes"></script>
   </body>
 </html>

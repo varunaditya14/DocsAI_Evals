@@ -11,7 +11,7 @@ from openai import AzureOpenAI
 from rapidfuzz import fuzz
 
 from backend.config import get_settings
-from backend.field_entry_validator import sanitize_field_value
+from backend.field_entry_validator import infer_field_type, sanitize_field_value
 
 
 logger = logging.getLogger(__name__)
@@ -79,6 +79,178 @@ def _field_type_for(field: str, field_types: dict[str, Any]) -> str:
     return str(field_types.get(field, "text")).strip().lower() or "text"
 
 
+def _is_line_items_value(value: Any) -> bool:
+    """Return True when a value is a non-empty list of row dictionaries."""
+    return isinstance(value, list) and bool(value) and isinstance(value[0], dict)
+
+
+def _coerce_row_dict(row: Any) -> dict[str, Any]:
+    """Return a dictionary row or an empty row for unsupported values."""
+    return row if isinstance(row, dict) else {}
+
+
+def _compare_scalar_values(golden_value: Any, extracted_value: Any, field_type: str) -> dict[str, Any]:
+    """Compare two scalar values using the field comparison status rules."""
+    golden_val = sanitize_field_value(golden_value)
+    extracted_val = sanitize_field_value(extracted_value)
+    score: float | None
+
+    if extracted_val == "":
+        status = "FN"
+        score = 0
+    elif golden_val == "":
+        status = "EXTRA_INFO"
+        score = None
+    elif field_type == "date":
+        status = "TP" if golden_val == extracted_val else "FP"
+        score = 100 if status == "TP" else 0
+    elif field_type == "numeric":
+        try:
+            status = "TP" if _parse_numeric(golden_val) == _parse_numeric(extracted_val) else "FP"
+        except ValueError:
+            status = "FP"
+        score = 100 if status == "TP" else 0
+    else:
+        score = round(float(fuzz.ratio(golden_val, extracted_val)), 2)
+        if score >= 90:
+            status = "TP"
+        elif score < 70:
+            status = "FP"
+        else:
+            status = "GREY"
+
+    return {
+        "status": status,
+        "golden_value": golden_val,
+        "extracted_value": extracted_val,
+        "score": score,
+    }
+
+
+def compare_line_items(golden_rows: list, extracted_rows: list, columns: list) -> dict[str, Any]:
+    """
+    Compare line items by matching each golden row to the closest extracted row by
+    description similarity, then comparing each column individually. Returns
+    per-row and per-cell comparison results.
+    """
+    normalized_columns = [str(column) for column in columns if str(column).strip()]
+    normalized_golden_rows = [_coerce_row_dict(row) for row in golden_rows if isinstance(row, dict)]
+    normalized_extracted_rows = [_coerce_row_dict(row) for row in extracted_rows if isinstance(row, dict)]
+    total_cells = len(normalized_golden_rows) * len(normalized_columns)
+
+    if not normalized_extracted_rows:
+        return {
+            "status": "FN",
+            "total_golden_rows": len(normalized_golden_rows),
+            "total_extracted_rows": 0,
+            "matched_count": 0,
+            "missing_rows": len(normalized_golden_rows),
+            "extra_rows": 0,
+            "row_results": [],
+            "matched_rows": [],
+            "unmatched_golden": normalized_golden_rows,
+            "unmatched_golden_rows": normalized_golden_rows,
+            "extra_extracted": [],
+            "extra_extracted_rows": [],
+            "f1_counts": {"tp": 0, "fp": 0, "fn": total_cells},
+        }
+
+    primary_column = normalized_columns[0] if normalized_columns else ""
+    available_indexes = set(range(len(normalized_extracted_rows)))
+    row_results: list[dict[str, Any]] = []
+    unmatched_golden: list[dict[str, Any]] = []
+
+    for golden_row in normalized_golden_rows:
+        golden_key = sanitize_field_value(golden_row.get(primary_column, ""))
+        best_index: int | None = None
+        best_score = 0.0
+        for extracted_index in available_indexes:
+            extracted_row = normalized_extracted_rows[extracted_index]
+            extracted_key = sanitize_field_value(extracted_row.get(primary_column, ""))
+            match_score = float(fuzz.ratio(golden_key, extracted_key)) if golden_key or extracted_key else 0.0
+            if match_score > best_score:
+                best_score = match_score
+                best_index = extracted_index
+
+        if best_index is None or best_score < 60:
+            unmatched_golden.append(golden_row)
+            continue
+
+        available_indexes.remove(best_index)
+        extracted_row = normalized_extracted_rows[best_index]
+        column_results: dict[str, dict[str, Any]] = {}
+        for column in normalized_columns:
+            field_type = infer_field_type(column)
+            column_results[column] = _compare_scalar_values(
+                golden_row.get(column, ""),
+                extracted_row.get(column, ""),
+                field_type,
+            )
+
+        statuses = [result["status"] for result in column_results.values()]
+        if statuses and all(status == "TP" for status in statuses):
+            row_status = "PASS"
+        elif any(status == "TP" for status in statuses):
+            row_status = "PARTIAL"
+        else:
+            row_status = "FAIL"
+
+        row_results.append(
+            {
+                "golden_row": golden_row,
+                "extracted_row": extracted_row,
+                "match_score": round(best_score, 2),
+                "column_results": column_results,
+                "row_status": row_status,
+            }
+        )
+
+    extra_extracted = [normalized_extracted_rows[index] for index in sorted(available_indexes)]
+    tp = sum(
+        1
+        for row_result in row_results
+        for column_result in row_result["column_results"].values()
+        if column_result.get("status") == "TP"
+    )
+    fp = sum(
+        1
+        for row_result in row_results
+        for column_result in row_result["column_results"].values()
+        if column_result.get("status") in {"FP", "GREY", "EXTRA_INFO"}
+    ) + (len(extra_extracted) * max(len(normalized_columns), 1))
+    fn = sum(
+        1
+        for row_result in row_results
+        for column_result in row_result["column_results"].values()
+        if column_result.get("status") == "FN"
+    ) + (len(unmatched_golden) * len(normalized_columns))
+
+    if fn == 0 and fp == 0:
+        status = "TP"
+    elif row_results and tp > 0:
+        status = "PARTIAL"
+    elif len(unmatched_golden) == len(normalized_golden_rows):
+        status = "FN"
+    else:
+        status = "FP"
+
+    return {
+        "status": status,
+        "total_golden_rows": len(normalized_golden_rows),
+        "total_extracted_rows": len(normalized_extracted_rows),
+        "matched_count": len(row_results),
+        "missing_rows": len(unmatched_golden),
+        "extra_rows": len(extra_extracted),
+        "row_results": row_results,
+        "matched_rows": row_results,
+        "unmatched_golden": unmatched_golden,
+        "unmatched_golden_rows": unmatched_golden,
+        "extra_extracted": extra_extracted,
+        "extra_extracted_rows": extra_extracted,
+        "f1_counts": {"tp": tp, "fp": fp, "fn": fn},
+    }
+
+
 def run_field_comparison(
     golden_fields: dict[str, Any],
     extracted_fields: dict[str, Any],
@@ -88,40 +260,82 @@ def run_field_comparison(
     results: dict[str, dict[str, Any]] = {}
 
     for field, golden_value in golden_fields.items():
-        golden_val = sanitize_field_value(golden_value)
-        extracted_val = sanitize_field_value(extracted_fields.get(field, ""))
         field_type = _field_type_for(field, field_types)
-        score: float | None
+        if isinstance(golden_value, list) and not golden_value:
+            extracted_value = extracted_fields.get(field, [])
+            status = "TP" if isinstance(extracted_value, list) else "FN"
+            results[field] = {
+                "status": status,
+                "golden_value": [],
+                "extracted_value": extracted_value,
+                "score": None,
+                "field_type": "line_items",
+                "line_items": {
+                    "status": status,
+                    "note": "table existence check only",
+                    "total_golden_rows": 0,
+                    "total_extracted_rows": len(extracted_value) if isinstance(extracted_value, list) else 0,
+                    "matched_count": 0,
+                    "missing_rows": 0 if isinstance(extracted_value, list) else 1,
+                    "extra_rows": len(extracted_value) if isinstance(extracted_value, list) else 0,
+                    "row_results": [],
+                    "unmatched_golden": [],
+                    "extra_extracted": extracted_value if isinstance(extracted_value, list) else [],
+                    "f1_counts": {"tp": 1 if status == "TP" else 0, "fp": 0, "fn": 1 if status == "FN" else 0},
+                },
+                "llm_judge": None,
+                "ocr_search": None,
+            }
+            continue
 
-        if extracted_val == "":
-            status = "FN"
-            score = 0
-        elif golden_val == "":
-            status = "EXTRA_INFO"
-            score = None
-        elif field_type == "date":
-            status = "TP" if golden_val == extracted_val else "FP"
-            score = 100 if status == "TP" else 0
-        elif field_type == "numeric":
-            try:
-                status = "TP" if _parse_numeric(golden_val) == _parse_numeric(extracted_val) else "FP"
-            except ValueError:
-                status = "FP"
-            score = 100 if status == "TP" else 0
-        else:
-            score = round(float(fuzz.ratio(golden_val, extracted_val)), 2)
-            if score >= 90:
-                status = "TP"
-            elif score < 70:
-                status = "FP"
-            else:
-                status = "GREY"
+        if _is_line_items_value(golden_value):
+            extracted_value = extracted_fields.get(field, [])
+            if not isinstance(extracted_value, list):
+                results[field] = {
+                    "status": "FN",
+                    "golden_value": golden_value,
+                    "extracted_value": extracted_value,
+                    "score": None,
+                    "field_type": "line_items",
+                    "line_items": {
+                        "status": "FN",
+                        "note": "expected table, got single value",
+                        "total_golden_rows": len(golden_value),
+                        "total_extracted_rows": 0,
+                        "matched_count": 0,
+                        "missing_rows": len(golden_value),
+                        "extra_rows": 0,
+                        "row_results": [],
+                        "unmatched_golden": golden_value,
+                        "extra_extracted": [],
+                        "f1_counts": {"tp": 0, "fp": 0, "fn": len(golden_value) * len(golden_value[0].keys())},
+                    },
+                    "llm_judge": None,
+                    "ocr_search": None,
+                }
+                continue
+
+            columns = list(golden_value[0].keys())
+            line_item_result = compare_line_items(golden_value, extracted_value, columns)
+            results[field] = {
+                "status": line_item_result["status"],
+                "golden_value": golden_value,
+                "extracted_value": extracted_value,
+                "score": None,
+                "field_type": "line_items",
+                "line_items": line_item_result,
+                "llm_judge": None,
+                "ocr_search": None,
+            }
+            continue
+
+        scalar_result = _compare_scalar_values(golden_value, extracted_fields.get(field, ""), field_type)
 
         results[field] = {
-            "status": status,
-            "golden_value": golden_val,
-            "extracted_value": extracted_val,
-            "score": score,
+            "status": scalar_result["status"],
+            "golden_value": scalar_result["golden_value"],
+            "extracted_value": scalar_result["extracted_value"],
+            "score": scalar_result["score"],
             "field_type": field_type,
             "llm_judge": None,
             "ocr_search": None,
@@ -133,9 +347,9 @@ def run_field_comparison(
         results[field] = {
             "status": "EXTRA",
             "golden_value": "",
-            "extracted_value": sanitize_field_value(extracted_value),
+            "extracted_value": extracted_value if isinstance(extracted_value, list) else sanitize_field_value(extracted_value),
             "score": None,
-            "field_type": _field_type_for(field, field_types),
+            "field_type": "line_items" if isinstance(extracted_value, list) else _field_type_for(field, field_types),
             "llm_judge": None,
             "ocr_search": None,
         }
@@ -231,17 +445,70 @@ def _format_contexts(contexts: list[str]) -> str:
     return "\n\n".join(f"Context {index}:\n{context}" for index, context in enumerate(contexts, start=1))
 
 
-def llm_ocr_searcher(field_name: str, golden_value: str, ocr_markdown: str) -> dict[str, Any]:
+def _search_value_in_markdown(value: Any, markdown: str) -> tuple[int, list[str]]:
+    """Search a single expected value in OCR markdown with exact and token fallback."""
+    normalized_value = sanitize_field_value(value)
+    occurrence_count, contexts = _exact_occurrence_contexts(markdown, normalized_value)
+    if occurrence_count == 0:
+        occurrence_count, contexts = _fuzzy_token_contexts(markdown, normalized_value)
+    return occurrence_count, contexts
+
+
+def _line_items_ocr_search(field_name: str, golden_value: list, ocr_markdown: str) -> dict[str, Any]:
+    """Search line item primary values in OCR markdown and aggregate the diagnosis."""
+    normalized_markdown = sanitize_field_value(ocr_markdown)
+    found_rows: list[dict[str, Any]] = []
+    missing_rows: list[dict[str, Any]] = []
+    total_occurrences = 0
+
+    for index, row in enumerate(golden_value, start=1):
+        if not isinstance(row, dict) or not row:
+            continue
+        primary_column = next(iter(row.keys()))
+        primary_value = sanitize_field_value(row.get(primary_column, ""))
+        occurrence_count, _contexts = _search_value_in_markdown(primary_value, normalized_markdown)
+        total_occurrences += occurrence_count
+        row_result = {
+            "row_index": index,
+            "primary_column": primary_column,
+            "primary_value": primary_value,
+            "occurrence_count": occurrence_count,
+        }
+        if occurrence_count > 0:
+            found_rows.append(row_result)
+        else:
+            missing_rows.append(row_result)
+
+    if found_rows and not missing_rows:
+        verdict = "PROMPT_PROBLEM"
+        reason = "All line item primary values were found in OCR markdown."
+    elif missing_rows and not found_rows:
+        verdict = "OCR_LIMITATION"
+        reason = "No line item primary values were found in OCR markdown."
+    else:
+        verdict = "PARTIAL"
+        reason = "Some line item primary values were found in OCR markdown and some were missing."
+
+    return {
+        "verdict": verdict,
+        "reason": reason,
+        "occurrence_count": total_occurrences,
+        "preliminary": "line_items_aggregate",
+        "llm_error": False,
+        "found_rows": found_rows,
+        "missing_rows": missing_rows,
+    }
+
+
+def llm_ocr_searcher(field_name: str, golden_value: Any, ocr_markdown: str) -> dict[str, Any]:
     """Diagnose whether a failed field is a prompt problem or OCR limitation."""
     try:
         normalized_markdown = sanitize_field_value(ocr_markdown)
-        normalized_value = sanitize_field_value(golden_value)
-        occurrence_count, contexts = _exact_occurrence_contexts(normalized_markdown, normalized_value)
+        if _is_line_items_value(golden_value):
+            return _line_items_ocr_search(field_name, golden_value, normalized_markdown)
 
-        if occurrence_count == 0:
-            fuzzy_count, fuzzy_contexts = _fuzzy_token_contexts(normalized_markdown, normalized_value)
-            occurrence_count = fuzzy_count
-            contexts = fuzzy_contexts
+        normalized_value = sanitize_field_value(golden_value)
+        occurrence_count, contexts = _search_value_in_markdown(normalized_value, normalized_markdown)
 
         if occurrence_count == 0:
             preliminary = "likely_ocr_fail"
