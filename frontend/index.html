@@ -172,9 +172,10 @@
                     <div class="chip-row" id="add-field-chips">
                       <button type="button" class="chip chip--active" data-add-type="simple">Simple</button>
                       <button type="button" class="chip" data-add-type="multiline">Multiline</button>
-                      <button type="button" class="chip" data-add-type="table">Table</button>
+                      <button type="button" class="chip" data-add-type="table">Table (line items)</button>
                     </div>
                   </div>
+                  <p class="form-hint">Use Table to add repeating rows like line items - it nests as an array under the field name you give it, alongside your other fields.</p>
 
                   <hr class="divider" />
 
@@ -187,61 +188,97 @@
                   <button id="run-eval-button" class="btn btn--primary btn--full" type="submit" disabled>Run evaluation</button>
                 </div>
               </form>
+
+              <section class="card" id="schema-import-card">
+                <header class="card__header">
+                  <h2 class="card__title">Import JSON schema</h2>
+                  <span class="card__hint">Paste a full template to auto-generate fields</span>
+                </header>
+                <div class="card__body">
+                  <textarea id="schema-import-input" class="textarea-input schema-import-textarea" placeholder="Paste your complete JSON schema here..."></textarea>
+                  <div class="schema-import-actions">
+                    <button id="schema-import-parse-button" class="btn btn--secondary" type="button">Parse schema</button>
+                  </div>
+                  <div id="schema-import-error" class="banner banner--error hidden"></div>
+
+                  <nav id="schema-import-doctypes" class="tab-bar hidden" aria-label="Detected document types"></nav>
+                  <div id="schema-import-generated" class="schema-generated hidden"></div>
+                </div>
+              </section>
             </div>
           </div>
 
           <aside class="result-panel">
-            <header class="result-panel__header">
-              <h2 class="result-panel__title">Result summary</h2>
-              <span id="result-status-badge" class="badge badge--warning">PENDING</span>
-            </header>
-            <p id="result-subtitle" class="result-panel__subtitle">Waiting for evaluation</p>
+            <nav class="tab-bar side-tab-bar" aria-label="Side panel sections">
+              <button class="tab tab--active" type="button" data-side-tab="json">JSON preview</button>
+              <button class="tab" type="button" data-side-tab="result">Result summary</button>
+            </nav>
 
-            <div class="result-stats">
-              <div class="result-stat result-stat--wide">
-                <span class="result-stat__label">Overall extraction score</span>
-                <strong id="result-f1" class="result-stat__value result-stat__value--brand">-</strong>
+            <div data-side-panel="json" class="side-panel-content">
+              <div id="json-preview-doctype-head" class="json-preview-head">
+                <label class="form-label" for="json-preview-doctype">Document type key</label>
+                <input id="json-preview-doctype" type="text" class="text-input" placeholder="documentType" autocomplete="off" />
               </div>
-              <div class="result-stat">
-                <span class="result-stat__label">Passed</span>
-                <strong id="result-passed" class="result-stat__value result-stat__value--success">-</strong>
+              <div class="json-preview-actions">
+                <button id="json-preview-copy-button" class="btn btn--secondary btn--small" type="button">Copy</button>
               </div>
-              <div class="result-stat">
-                <span class="result-stat__label">Failed</span>
-                <strong id="result-failed" class="result-stat__value result-stat__value--error">-</strong>
-              </div>
-              <div class="result-stat">
-                <span class="result-stat__label">Missing</span>
-                <strong id="result-missing" class="result-stat__value result-stat__value--warning">-</strong>
-              </div>
-              <div class="result-stat">
-                <span class="result-stat__label">Uncertain</span>
-                <strong id="result-uncertain" class="result-stat__value">-</strong>
-              </div>
+              <pre id="json-preview-output" class="json-preview hidden"></pre>
+              <p id="json-preview-empty" class="result-insights__empty">Add fields to see the JSON preview</p>
             </div>
 
-            <div class="result-section">
-              <span class="section-label">Insights</span>
-              <div id="result-insights" class="result-insights">
-                <p class="result-insights__empty">Insights appear after evaluation</p>
-              </div>
-            </div>
+            <div data-side-panel="result" class="side-panel-content hidden">
+              <header class="result-panel__header">
+                <h2 class="result-panel__title">Result summary</h2>
+                <span id="result-status-badge" class="badge badge--warning">PENDING</span>
+              </header>
+              <p id="result-subtitle" class="result-panel__subtitle">Waiting for evaluation</p>
 
-            <div class="result-section">
-              <span class="section-label">OCR vs LLM diagnosis</span>
-              <div class="diagnosis-row">
-                <div class="result-stat">
-                  <span class="result-stat__label">Prompt issues</span>
-                  <strong id="result-prompt-problems" class="result-stat__value result-stat__value--warning">-</strong>
+              <div class="result-stats">
+                <div class="result-stat result-stat--wide">
+                  <span class="result-stat__label">Overall extraction score</span>
+                  <strong id="result-f1" class="result-stat__value result-stat__value--brand">-</strong>
                 </div>
                 <div class="result-stat">
-                  <span class="result-stat__label">OCR limits</span>
-                  <strong id="result-ocr-limitations" class="result-stat__value result-stat__value--error">-</strong>
+                  <span class="result-stat__label">Passed</span>
+                  <strong id="result-passed" class="result-stat__value result-stat__value--success">-</strong>
+                </div>
+                <div class="result-stat">
+                  <span class="result-stat__label">Failed</span>
+                  <strong id="result-failed" class="result-stat__value result-stat__value--error">-</strong>
+                </div>
+                <div class="result-stat">
+                  <span class="result-stat__label">Missing</span>
+                  <strong id="result-missing" class="result-stat__value result-stat__value--warning">-</strong>
+                </div>
+                <div class="result-stat">
+                  <span class="result-stat__label">Uncertain</span>
+                  <strong id="result-uncertain" class="result-stat__value">-</strong>
                 </div>
               </div>
-            </div>
 
-            <button id="open-report-button" class="btn btn--secondary btn--full" type="button" disabled>Open full report</button>
+              <div class="result-section">
+                <span class="section-label">Insights</span>
+                <div id="result-insights" class="result-insights">
+                  <p class="result-insights__empty">Insights appear after evaluation</p>
+                </div>
+              </div>
+
+              <div class="result-section">
+                <span class="section-label">OCR vs LLM diagnosis</span>
+                <div class="diagnosis-row">
+                  <div class="result-stat">
+                    <span class="result-stat__label">Prompt issues</span>
+                    <strong id="result-prompt-problems" class="result-stat__value result-stat__value--warning">-</strong>
+                  </div>
+                  <div class="result-stat">
+                    <span class="result-stat__label">OCR limits</span>
+                    <strong id="result-ocr-limitations" class="result-stat__value result-stat__value--error">-</strong>
+                  </div>
+                </div>
+              </div>
+
+              <button id="open-report-button" class="btn btn--secondary btn--full" type="button" disabled>Open full report</button>
+            </div>
           </aside>
         </div>
 
