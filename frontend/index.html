@@ -4,391 +4,410 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DocsAI Evals Portal</title>
-    <link rel="stylesheet" href="/assets/styles.css?v=20260720-field-entry-modes" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260721-redesign" />
   </head>
   <body>
-    <header class="topbar">
-      <div class="brand">
-        <div class="brand-mark" aria-hidden="true"><span class="ti ti-file"></span></div>
-        <div>
-          <strong>DocsAI Evals</strong>
-          <span>Field extraction evaluation</span>
-        </div>
-      </div>
-      <div class="top-actions">
-        <span id="topHealthDot" class="health-dot"></span>
-        <span id="topHealthText">Checking backend</span>
-        <div class="avatar">DE</div>
-      </div>
-    </header>
-
-    <div class="app-shell">
+    <div class="app-layout">
       <aside class="sidebar" aria-label="Main navigation">
-        <button class="nav-item active" type="button" data-section="dashboard" title="Dashboard" aria-label="Dashboard">
-          <span class="ti ti-dashboard"></span>
-        </button>
-        <button class="nav-item" type="button" data-section="run" title="Run Evaluation" aria-label="Run Evaluation">
-          <span class="ti ti-play"></span>
-        </button>
-        <button class="nav-item" type="button" data-section="history" title="Run History" aria-label="Run History">
-          <span class="ti ti-history"></span>
-        </button>
-        <button class="nav-item" type="button" data-section="reports" title="Reports" aria-label="Reports">
-          <span class="ti ti-report"></span>
-        </button>
-        <button class="nav-item" type="button" data-section="settings" title="Settings and Health" aria-label="Settings and Health">
+        <div class="sidebar__logo" aria-hidden="true">DE</div>
+        <nav class="sidebar__nav">
+          <button class="nav-item nav-item--active" type="button" data-page="dashboard" title="Dashboard" aria-label="Dashboard">
+            <span class="ti ti-layout-dashboard"></span>
+          </button>
+          <button class="nav-item" type="button" data-page="run" title="Run evaluation" aria-label="Run evaluation">
+            <span class="ti ti-player-play"></span>
+          </button>
+          <button class="nav-item" type="button" data-page="history" title="Run history" aria-label="Run history">
+            <span class="ti ti-history"></span>
+          </button>
+          <button class="nav-item" type="button" data-page="reports" title="Reports" aria-label="Reports">
+            <span class="ti ti-report-analytics"></span>
+          </button>
+        </nav>
+        <div class="sidebar__spacer"></div>
+        <button class="nav-item" type="button" data-page="settings" title="Settings" aria-label="Settings">
           <span class="ti ti-settings"></span>
         </button>
       </aside>
 
-      <main class="content">
-        <section id="dashboard" class="view active">
-          <div class="page-heading">
-            <div class="heading-icon"><span class="ti ti-dashboard"></span></div>
-            <div>
-              <h1>Evaluation Dashboard</h1>
-              <p>Monitor field-level DocsAI extraction quality</p>
-            </div>
+      <main class="main-area">
+        <div id="page-dashboard" class="page">
+          <div class="page-head">
+            <h1 class="page-title">Evaluation dashboard</h1>
+            <p class="page-subtitle">Monitor field-level DocsAI extraction quality</p>
           </div>
 
-          <div id="dashboardError" class="banner error" hidden></div>
+          <div id="dashboard-error" class="banner banner--error hidden"></div>
 
-          <section class="summary-grid" aria-label="Summary cards">
-            <article class="stat-card"><span>Total Runs</span><strong id="totalRuns">0</strong></article>
-            <article class="stat-card"><span>Average F1</span><strong id="averageF1">0.0%</strong></article>
-            <article class="stat-card"><span>Prompt Problems</span><strong id="promptProblems">0</strong></article>
-            <article class="stat-card"><span>OCR Limitations</span><strong id="ocrLimitations">0</strong></article>
+          <section class="stat-grid">
+            <article class="stat-card">
+              <span class="stat-card__label">Total runs</span>
+              <strong id="stat-total-runs" class="stat-card__value">0</strong>
+            </article>
+            <article class="stat-card">
+              <span class="stat-card__label">Average F1</span>
+              <strong id="stat-average-f1" class="stat-card__value stat-card__value--brand">0.0%</strong>
+            </article>
+            <article class="stat-card">
+              <span class="stat-card__label">Prompt problems</span>
+              <strong id="stat-prompt-problems" class="stat-card__value">0</strong>
+            </article>
+            <article class="stat-card">
+              <span class="stat-card__label">OCR limitations</span>
+              <strong id="stat-ocr-limitations" class="stat-card__value">0</strong>
+            </article>
           </section>
 
           <section class="card">
-            <div class="section-title">
+            <header class="card__header">
               <div>
-                <h2>Latest Run</h2>
-                <p id="latestReportLabel">No report selected</p>
+                <h2 class="card__title">Latest run</h2>
+                <p id="latest-run-label" class="card__meta">No report selected</p>
               </div>
-              <span id="dashboardHealthPill" class="status-pill partial">CHECKING</span>
-            </div>
-            <div class="score-grid">
-              <div class="score-card"><span>Precision</span><strong id="latestPrecision">-</strong></div>
-              <div class="score-card"><span>Recall</span><strong id="latestRecall">-</strong></div>
-              <div class="score-card"><span>F1</span><strong id="latestF1">-</strong></div>
-              <div class="score-card"><span>Missing</span><strong id="latestMissing">-</strong></div>
+              <span id="dashboard-health-badge" class="badge badge--warning">CHECKING</span>
+            </header>
+            <div class="card__body">
+              <div class="metric-row">
+                <div class="metric-card">
+                  <span class="metric-card__label">Precision</span>
+                  <strong id="latest-precision" class="metric-card__value">-</strong>
+                </div>
+                <div class="metric-card">
+                  <span class="metric-card__label">Recall</span>
+                  <strong id="latest-recall" class="metric-card__value">-</strong>
+                </div>
+                <div class="metric-card">
+                  <span class="metric-card__label">F1</span>
+                  <strong id="latest-f1" class="metric-card__value">-</strong>
+                </div>
+                <div class="metric-card">
+                  <span class="metric-card__label">Missing</span>
+                  <strong id="latest-missing" class="metric-card__value">-</strong>
+                </div>
+              </div>
             </div>
           </section>
 
           <section class="card">
-            <div class="section-title">
+            <header class="card__header">
               <div>
-                <h2>Recent Reports</h2>
-                <p>Latest saved field evaluation runs</p>
+                <h2 class="card__title">Recent reports</h2>
+                <p class="card__meta">Latest saved field evaluation runs</p>
               </div>
-              <button class="secondary-button" type="button" data-section-jump="history">View History</button>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Filename</th>
-                    <th>Document Type</th>
-                    <th>F1</th>
-                    <th>Passed</th>
-                    <th>Failed</th>
-                    <th>Missing</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody id="recentReportsBody"></tbody>
-              </table>
+              <button class="btn btn--secondary" type="button" data-nav="history">View history</button>
+            </header>
+            <div class="card__body card__body--flush">
+              <div class="table-scroll">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Run ID</th>
+                      <th>Document type</th>
+                      <th>F1</th>
+                      <th>Passed</th>
+                      <th>Failed</th>
+                      <th>Missing</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="recent-reports-body"></tbody>
+                </table>
+              </div>
             </div>
           </section>
-        </section>
+        </div>
 
-        <section id="run" class="view">
-          <div class="page-heading">
-            <div class="heading-icon"><span class="ti ti-play"></span></div>
-            <div>
-              <h1>Run Evaluation</h1>
-              <p>Enter a DocsAI run ID, load extracted fields, then add camelCase schema fields and golden values</p>
-            </div>
-          </div>
-
-          <div class="execute-grid">
-            <form id="evalForm" class="card form-card">
-              <div class="section-title">
-                <div>
-                  <h2>DocsAI Run</h2>
-                  <p>DocsAI authentication and run output retrieval use the existing backend connection</p>
-                </div>
-                <span id="runStatus" class="status-pill ready">READY</span>
+        <div id="page-run" class="page hidden">
+          <div class="run-content">
+            <div class="run-content__inner">
+              <div class="page-head">
+                <h1 class="page-title">Run evaluation</h1>
+                <p class="page-subtitle">Compare DocsAI extraction output against your expected values</p>
               </div>
 
-              <label class="field">
-                <span>DocsAI Run ID</span>
-                <div class="input-action-row">
-                  <input id="runId" type="text" placeholder="run-..." autocomplete="off" />
-                  <button id="loadFieldsButton" class="secondary-button" type="button">Load run fields</button>
-                </div>
-              </label>
-
-              <div id="runFieldsMessage" class="banner" hidden></div>
-              <div id="restorePrompt" class="restore-prompt" hidden>
-                <span>Restore previous values for this run?</span>
-                <button id="restoreYes" type="button">Yes</button>
-                <button id="restoreNo" type="button">No</button>
-              </div>
-
-              <section id="detectedPanel" class="detected-panel" hidden>
-                <div><span>Detected document type</span><strong id="detectedDocType">-</strong></div>
-                <div><span>Extracted field count</span><strong id="detectedFieldCount">0</strong></div>
-              </section>
-
-              <section class="expected-section">
-                <div class="section-title compact">
-                  <div>
-                    <h2>Expected fields schema and golden values</h2>
-                    <p>Enter camelCase field names and the golden value to compare with DocsAI output (e.g. invoiceNo, dateOfBirth)</p>
+              <section class="card">
+                <header class="card__header">
+                  <h2 class="card__title">DocsAI run</h2>
+                  <span id="run-status-badge" class="badge badge--success">READY</span>
+                </header>
+                <div class="card__body">
+                  <label class="form-label" for="run-id-input">Run ID</label>
+                  <div class="input-row">
+                    <input id="run-id-input" type="text" class="text-input" placeholder="run-..." autocomplete="off" />
+                    <button id="load-fields-button" class="btn btn--secondary" type="button">Load fields</button>
                   </div>
-                </div>
-                <div id="fieldRows" class="field-entry-list"></div>
-                <button id="addFieldButton" class="secondary-button inline-icon" type="button">
-                  <span class="ti ti-plus" aria-hidden="true"></span>
-                  Add field
-                </button>
-                <div id="fieldTypePicker" class="field-type-picker" hidden>
-                  <button class="field-type-btn" type="button" data-entry-type="simple">
-                    <span class="ti ti-text-size" aria-hidden="true"></span>
-                    <strong>Simple field</strong>
-                    <small>invoiceNo, date, terms</small>
-                  </button>
-                  <button class="field-type-btn" type="button" data-entry-type="text_block">
-                    <span class="ti ti-align-left" aria-hidden="true"></span>
-                    <strong>Text block</strong>
-                    <small>billTo, deliveryTo, notes</small>
-                  </button>
-                  <button class="field-type-btn" type="button" data-entry-type="line_items">
-                    <span class="ti ti-table" aria-hidden="true"></span>
-                    <strong>Line items table</strong>
-                    <small>items, products, lineItems</small>
-                  </button>
+                  <p class="form-hint">Paste a DocsAI run ID to auto-populate field names</p>
+
+                  <div id="run-fields-banner" class="banner hidden"></div>
+                  <div id="restore-prompt" class="restore-banner hidden">
+                    <span>Restore previous values for this run?</span>
+                    <div class="restore-banner__actions">
+                      <button id="restore-yes" class="btn btn--secondary btn--small" type="button">Yes</button>
+                      <button id="restore-no" class="btn btn--secondary btn--small" type="button">No</button>
+                    </div>
+                  </div>
+
+                  <div id="detected-panel" class="detected-panel hidden">
+                    <div><span>Detected document type</span><strong id="detected-doc-type">-</strong></div>
+                    <div><span>Extracted field count</span><strong id="detected-field-count">0</strong></div>
+                  </div>
+
+                  <details id="extracted-hints" class="hint-panel hidden">
+                    <summary>DocsAI extracted these fields - click to pre-fill names</summary>
+                    <div id="extracted-field-pills" class="pill-row"></div>
+                  </details>
                 </div>
               </section>
 
-              <details id="extractedHintsPanel" class="hint-panel" hidden>
-                <summary>DocsAI extracted these fields - click to pre-fill names</summary>
-                <div id="extractedFieldPills" class="pill-list"></div>
-              </details>
+              <form id="eval-form" class="card">
+                <header class="card__header">
+                  <h2 class="card__title">Expected field values</h2>
+                  <span class="card__hint">camelCase field names only</span>
+                </header>
+                <div class="card__body">
+                  <div id="field-rows" class="field-rows"></div>
 
-              <div id="runMessage" class="banner" hidden></div>
-              <div id="progressText" class="progress-text" hidden>Fetching run output...</div>
-              <button id="runButton" class="primary-button" type="submit" disabled>Run Evaluation</button>
-            </form>
+                  <div class="add-field-row">
+                    <span class="add-field-row__label">Add field:</span>
+                    <div class="chip-row" id="add-field-chips">
+                      <button type="button" class="chip chip--active" data-add-type="simple">Simple</button>
+                      <button type="button" class="chip" data-add-type="multiline">Multiline</button>
+                      <button type="button" class="chip" data-add-type="table">Table</button>
+                    </div>
+                  </div>
 
-            <section class="card result-card">
-              <div class="section-title">
-                <div>
-                  <h2>Result Summary</h2>
-                  <p id="resultSubtitle">Waiting for evaluation</p>
+                  <hr class="divider" />
+
+                  <div id="run-message-banner" class="banner hidden"></div>
+                  <div id="progress-indicator" class="progress-indicator hidden">
+                    <span class="spinner" aria-hidden="true"></span>
+                    <span id="progress-text">Fetching run output...</span>
+                  </div>
+
+                  <button id="run-eval-button" class="btn btn--primary btn--full" type="submit" disabled>Run evaluation</button>
                 </div>
-                <span id="resultStatus" class="status-pill partial">PENDING</span>
-              </div>
-              <dl class="result-list compact">
-                <div><dt>Run ID</dt><dd id="resultRunId">-</dd></div>
-                <div><dt>Document Type</dt><dd id="resultDocumentType">-</dd></div>
-              </dl>
-              <div class="report-metric-list">
-                <article class="report-metric-card combined-output">
-                  <span>Total summary</span>
-                  <strong id="resultF1">-</strong>
-                  <small>Precision <b id="resultPrecision">-</b> / Recall <b id="resultRecall">-</b></small>
-                </article>
-                <article class="report-metric-card">
-                  <span>Pass / Fail / Uncertain counts</span>
-                  <strong><b id="resultPassed">-</b> / <b id="resultFailed">-</b> / <b id="resultUncertain">-</b></strong>
-                  <small>Missing fields <b id="resultMissing">-</b></small>
-                </article>
-                <article class="report-metric-card">
-                  <span>LLM Judge decisions</span>
-                  <strong id="resultLlmDecisions">-</strong>
-                  <small>Semantic judge resolutions</small>
-                </article>
-                <article class="report-metric-card">
-                  <span>Field-wise scores</span>
-                  <strong id="resultFieldScores">-</strong>
-                  <small>Fields evaluated in this run</small>
-                </article>
-                <article class="report-metric-card">
-                  <span>OCR vs LLM Judge insights</span>
-                  <strong><b id="resultPromptProblems">-</b> / <b id="resultOcrLimitations">-</b></strong>
-                  <small>Prompt problems / OCR limitations</small>
-                </article>
-                <article class="report-metric-card">
-                  <span>Recommended actions</span>
-                  <strong id="resultRecommendedActions">-</strong>
-                  <small>Action items generated</small>
-                </article>
-              </div>
-              <button id="openLatestReport" class="secondary-button" type="button" disabled>Open Report</button>
-            </section>
-          </div>
-        </section>
-
-        <section id="history" class="view">
-          <div class="page-heading">
-            <div class="heading-icon"><span class="ti ti-history"></span></div>
-            <div>
-              <h1>Run History</h1>
-              <p>Track field evaluation executions</p>
+              </form>
             </div>
           </div>
 
-          <section class="toolbar card">
+          <aside class="result-panel">
+            <header class="result-panel__header">
+              <h2 class="result-panel__title">Result summary</h2>
+              <span id="result-status-badge" class="badge badge--warning">PENDING</span>
+            </header>
+            <p id="result-subtitle" class="result-panel__subtitle">Waiting for evaluation</p>
+
+            <div class="result-stats">
+              <div class="result-stat result-stat--wide">
+                <span class="result-stat__label">Overall extraction score</span>
+                <strong id="result-f1" class="result-stat__value result-stat__value--brand">-</strong>
+              </div>
+              <div class="result-stat">
+                <span class="result-stat__label">Passed</span>
+                <strong id="result-passed" class="result-stat__value result-stat__value--success">-</strong>
+              </div>
+              <div class="result-stat">
+                <span class="result-stat__label">Failed</span>
+                <strong id="result-failed" class="result-stat__value result-stat__value--error">-</strong>
+              </div>
+              <div class="result-stat">
+                <span class="result-stat__label">Missing</span>
+                <strong id="result-missing" class="result-stat__value result-stat__value--warning">-</strong>
+              </div>
+              <div class="result-stat">
+                <span class="result-stat__label">Uncertain</span>
+                <strong id="result-uncertain" class="result-stat__value">-</strong>
+              </div>
+            </div>
+
+            <div class="result-section">
+              <span class="section-label">Insights</span>
+              <div id="result-insights" class="result-insights">
+                <p class="result-insights__empty">Insights appear after evaluation</p>
+              </div>
+            </div>
+
+            <div class="result-section">
+              <span class="section-label">OCR vs LLM diagnosis</span>
+              <div class="diagnosis-row">
+                <div class="result-stat">
+                  <span class="result-stat__label">Prompt issues</span>
+                  <strong id="result-prompt-problems" class="result-stat__value result-stat__value--warning">-</strong>
+                </div>
+                <div class="result-stat">
+                  <span class="result-stat__label">OCR limits</span>
+                  <strong id="result-ocr-limitations" class="result-stat__value result-stat__value--error">-</strong>
+                </div>
+              </div>
+            </div>
+
+            <button id="open-report-button" class="btn btn--secondary btn--full" type="button" disabled>Open full report</button>
+          </aside>
+        </div>
+
+        <div id="page-history" class="page hidden">
+          <div class="page-head">
+            <h1 class="page-title">Run history</h1>
+            <p class="page-subtitle">Track field evaluation executions</p>
+          </div>
+
+          <div class="toolbar-row">
             <label class="search-box">
-              <span class="ti ti-search"></span>
-              <input id="historySearch" type="search" placeholder="Search by run ID, report, or document type..." />
+              <span class="ti ti-search" aria-hidden="true"></span>
+              <input id="history-search" type="search" placeholder="Search by run ID or document type..." />
             </label>
-            <button id="refreshReports" class="primary-button" type="button">Refresh</button>
-          </section>
-          <div id="historyMessage" class="banner" hidden></div>
+            <button id="refresh-reports-button" class="btn btn--primary" type="button">Refresh</button>
+          </div>
+
+          <div id="history-banner" class="banner hidden"></div>
 
           <section class="card">
-            <div class="section-title">
+            <header class="card__header">
               <div>
-                <h2>Evaluation Runs</h2>
-                <p id="reportCount">0 reports</p>
+                <h2 class="card__title">Evaluation runs</h2>
+                <p id="history-count" class="card__meta">0 reports</p>
+              </div>
+            </header>
+            <div class="card__body card__body--flush">
+              <div class="table-scroll">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Run ID</th>
+                      <th>Document type</th>
+                      <th><button id="sort-f1-button" class="sort-btn" type="button">F1 <span id="sort-f1-indicator">&#8595;</span></button></th>
+                      <th>Passed</th>
+                      <th>Failed</th>
+                      <th>Missing</th>
+                      <th>Timestamp</th>
+                      <th>View</th>
+                      <th>Delete</th>
+                    </tr>
+                  </thead>
+                  <tbody id="history-body"></tbody>
+                </table>
+              </div>
+              <div class="pagination-row">
+                <button id="history-prev" class="icon-btn" type="button" aria-label="Previous page">
+                  <span class="ti ti-chevron-left"></span>
+                </button>
+                <span id="history-page-label">Page 1 of 1</span>
+                <button id="history-next" class="icon-btn" type="button" aria-label="Next page">
+                  <span class="ti ti-chevron-right"></span>
+                </button>
               </div>
             </div>
-            <div class="table-wrap">
-              <table class="history-table">
-                <thead>
-                  <tr>
-                    <th>Filename</th>
-                    <th>Document Type</th>
-                    <th><button id="sortF1" class="sort-button" type="button">F1 <span id="sortF1Indicator">down</span></button></th>
-                    <th>Passed</th>
-                    <th>Failed</th>
-                    <th>Missing</th>
-                    <th>Timestamp</th>
-                    <th>View</th>
-                    <th>Delete</th>
-                  </tr>
-                </thead>
-                <tbody id="historyBody"></tbody>
-              </table>
-            </div>
-            <div class="history-pagination">
-              <button id="historyPrev" class="icon-action pagination-arrow" type="button" aria-label="Previous page">
-                <span class="ti ti-chevron-left"></span>
-              </button>
-              <span id="historyPageLabel">Page 1 of 1</span>
-              <button id="historyNext" class="icon-action pagination-arrow" type="button" aria-label="Next page">
-                <span class="ti ti-chevron-right"></span>
-              </button>
-            </div>
           </section>
-        </section>
+        </div>
 
-        <section id="reports" class="view">
-          <div class="page-heading">
-            <div class="heading-icon"><span class="ti ti-report"></span></div>
-            <div>
-              <h1>Reports</h1>
-              <p>Open saved reports and inspect field-level quality</p>
-            </div>
+        <div id="page-reports" class="page hidden">
+          <div class="page-head">
+            <h1 class="page-title">Reports</h1>
+            <p class="page-subtitle">Open saved reports and inspect field-level quality</p>
           </div>
-          <section class="card empty-state">
-            <h2>Select a report from Run History</h2>
-            <p>Use View to open the detailed comparison modal.</p>
-            <button class="primary-button" type="button" data-section-jump="history">Go to Run History</button>
+          <section class="card empty-card">
+            <p>Open a report from Run history to inspect field-level results</p>
+            <button class="btn btn--primary" type="button" data-nav="history">Go to run history</button>
           </section>
-        </section>
+        </div>
 
-        <section id="settings" class="view">
-          <div class="page-heading">
-            <div class="heading-icon"><span class="ti ti-settings"></span></div>
-            <div>
-              <h1>Settings / Health</h1>
-              <p>Runtime connectivity and backend status</p>
-            </div>
+        <div id="page-settings" class="page hidden">
+          <div class="page-head">
+            <h1 class="page-title">Settings / health</h1>
+            <p class="page-subtitle">Runtime connectivity and backend status</p>
           </div>
           <section class="card">
-            <div class="section-title">
-              <div>
-                <h2>Backend Health</h2>
-                <p>Current FastAPI status and frontend API base</p>
+            <header class="card__header">
+              <h2 class="card__title">Backend health</h2>
+              <button id="refresh-health-button" class="btn btn--secondary" type="button">Refresh</button>
+            </header>
+            <div class="card__body">
+              <div id="health-banner" class="banner hidden"></div>
+              <div class="info-rows">
+                <div class="info-row">
+                  <span class="info-row__label">Status</span>
+                  <span class="info-row__value">
+                    <span id="health-status-dot" class="status-dot"></span>
+                    <span id="health-status-text">Checking</span>
+                  </span>
+                </div>
+                <div class="info-row">
+                  <span class="info-row__label">API base URL</span>
+                  <span id="health-api-base" class="info-row__value">Same origin</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-row__label">Results configured</span>
+                  <span id="health-results-path" class="info-row__value">-</span>
+                </div>
+                <div class="info-row">
+                  <span class="info-row__label">Azure OpenAI configured</span>
+                  <span id="health-azure-openai" class="info-row__value">-</span>
+                </div>
               </div>
-              <button id="refreshHealth" class="secondary-button" type="button">Refresh</button>
             </div>
-            <div id="healthMessage" class="banner" hidden></div>
-            <dl class="settings-list">
-              <div><dt>Status</dt><dd id="healthStatus">Checking</dd></div>
-              <div><dt>API Base URL</dt><dd id="apiBaseUrl">Same origin</dd></div>
-              <div><dt>Results Configured</dt><dd id="healthResultsPath">Not returned by backend</dd></div>
-              <div><dt>Azure OpenAI Configured</dt><dd id="healthOpenAi">Not returned by backend</dd></div>
-            </dl>
           </section>
-        </section>
+        </div>
       </main>
     </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-    <div id="reportModal" class="modal-backdrop" hidden>
-      <section class="report-modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
-        <header class="modal-head">
-          <div class="modal-title-group">
-            <div class="modal-icon"><span class="ti ti-report"></span></div>
+    <div id="report-modal" class="modal-overlay hidden">
+      <div class="modal-scroll">
+        <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+          <header class="modal-card__header">
             <div>
-              <h2 id="modalTitle">Evaluation Report</h2>
-              <p id="modalSubtitle">Report details</p>
+              <p id="modal-filename" class="modal-card__meta">report.json</p>
+              <h2 id="modal-title" class="modal-card__title">View report</h2>
             </div>
+            <button id="modal-close-button" class="icon-btn" type="button" aria-label="Close report">
+              <span class="ti ti-x"></span>
+            </button>
+          </header>
+
+          <div class="modal-score-bar">
+            <div><span>Run ID</span><strong id="modal-run-id" title="">-</strong></div>
+            <div><span>Document type</span><strong id="modal-doc-type">-</strong></div>
+            <div><span>Overall score</span><strong id="modal-f1" class="modal-score-bar__brand">-</strong></div>
+            <div><span>Precision</span><strong id="modal-precision">-</strong></div>
+            <div><span>Recall</span><strong id="modal-recall">-</strong></div>
           </div>
-          <button id="closeModal" class="icon-button" type="button" aria-label="Close report">
-            <span class="ti ti-x"></span>
-          </button>
-        </header>
-        <div class="modal-summary">
-          <div><span>Run ID</span><strong id="modalRunId">-</strong></div>
-          <div><span>Document Type</span><strong id="modalDocumentType">-</strong></div>
-          <div><span>Timestamp</span><strong id="modalTimestamp">-</strong></div>
-          <div><span>F1</span><strong id="modalF1" class="combined-f1">-</strong></div>
-        </div>
-        <nav class="modal-tabs" aria-label="Report sections">
-          <button class="modal-tab active" type="button" data-report-tab="summary">Summary</button>
-          <button class="modal-tab" type="button" data-report-tab="fields">Field details</button>
-        </nav>
-        <div class="modal-content">
-          <section class="report-tab-panel active" data-report-panel="summary">
-            <div id="legacyReportNote" class="banner" hidden></div>
-            <div class="summary-score-grid">
-              <article class="score-tile overall"><span>Overall score</span><strong id="summaryF1">-</strong></article>
-              <article class="score-tile pass"><span>Passed</span><strong id="summaryPassed">0</strong></article>
-              <article class="score-tile fail"><span>Failed</span><strong id="summaryFailed">0</strong></article>
-              <article class="score-tile missing"><span>Missing</span><strong id="summaryMissing">0</strong></article>
-            </div>
-            <section class="insights-section">
-              <h3>What this run tells you</h3>
-              <div id="insightList" class="insight-list"></div>
+
+          <nav class="tab-bar" aria-label="Report sections">
+            <button class="tab tab--active" type="button" data-tab="summary">Summary</button>
+            <button class="tab" type="button" data-tab="fields">Field details</button>
+          </nav>
+
+          <div class="modal-card__content">
+            <section class="tab-panel tab-panel--active" data-panel="summary">
+              <div id="modal-legacy-note" class="banner hidden"></div>
+
+              <section class="modal-section">
+                <span class="section-label">What this run tells you</span>
+                <div id="modal-insights" class="insight-list"></div>
+              </section>
+
+              <section class="modal-section">
+                <span class="section-label">Recommended actions</span>
+                <div id="modal-actions" class="action-list"></div>
+              </section>
+
+              <div id="modal-legacy-data" class="hidden"></div>
+
+              <div class="modal-section modal-section--actions">
+                <button id="modal-download-button" class="btn btn--secondary" type="button">Download report</button>
+              </div>
             </section>
-            <section class="actions-section">
-              <h3>Recommended actions</h3>
-              <div id="recommendedActions" class="action-list"></div>
+
+            <section class="tab-panel" data-panel="fields">
+              <div id="modal-field-filters" class="chip-row"></div>
+              <div id="modal-field-details" class="field-detail-list"></div>
             </section>
-            <pre id="legacyOcrData" class="legacy-ocr-data" hidden></pre>
-            <div class="summary-actions">
-              <button id="downloadSummaryReport" class="secondary-button inline-icon" type="button">
-                <span class="ti ti-download" aria-hidden="true"></span>
-                Download report
-              </button>
-            </div>
-          </section>
-          <section class="report-tab-panel" data-report-panel="fields">
-            <div id="fieldFilters" class="field-filter-row"></div>
-            <div id="fieldDetailsList" class="field-details-list"></div>
-          </section>
-        </div>
-      </section>
+          </div>
+        </section>
+      </div>
     </div>
 
-    <script src="/assets/app.js?v=20260720-field-entry-modes"></script>
+    <script src="/assets/app.js?v=20260721-redesign"></script>
   </body>
 </html>

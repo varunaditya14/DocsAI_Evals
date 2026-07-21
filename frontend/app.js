@@ -1,13 +1,17 @@
 const FIELD_NAME_PATTERN = /^[a-z][a-zA-Z0-9]*$/;
+const STARTS_WITH_NUMBER_PATTERN = /^[0-9]/;
+const RESERVED_CHARS_PATTERN = /[[\]{}:'"]/;
 const MAX_FIELDS = 30;
 const MAX_TABLE_COLUMNS = 10;
 const MAX_TABLE_ROWS = 50;
 const RESTORE_PREFIX = "docsai-evals:";
+const PAGE_STORAGE_KEY = "docsai-evals:active-page";
+const VALID_PAGES = ["dashboard", "run", "history", "reports", "settings"];
 const progressMessages = [
   "Fetching run output...",
   "Comparing fields...",
-  "Running LLM judge on uncertain fields...",
-  "Analysing failed fields in OCR output...",
+  "Running LLM judge...",
+  "Analysing failures...",
   "Generating report...",
 ];
 
@@ -32,96 +36,92 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
 const els = {
-  views: $$(".view"),
+  pages: $$(".page"),
   navItems: $$(".nav-item"),
-  topHealthDot: $("#topHealthDot"),
-  topHealthText: $("#topHealthText"),
-  dashboardHealthPill: $("#dashboardHealthPill"),
-  dashboardError: $("#dashboardError"),
-  totalRuns: $("#totalRuns"),
-  averageF1: $("#averageF1"),
-  promptProblems: $("#promptProblems"),
-  ocrLimitations: $("#ocrLimitations"),
-  latestReportLabel: $("#latestReportLabel"),
-  latestPrecision: $("#latestPrecision"),
-  latestRecall: $("#latestRecall"),
-  latestF1: $("#latestF1"),
-  latestMissing: $("#latestMissing"),
-  recentReportsBody: $("#recentReportsBody"),
-  evalForm: $("#evalForm"),
-  runId: $("#runId"),
-  loadFieldsButton: $("#loadFieldsButton"),
-  runFieldsMessage: $("#runFieldsMessage"),
-  restorePrompt: $("#restorePrompt"),
-  restoreYes: $("#restoreYes"),
-  restoreNo: $("#restoreNo"),
-  detectedPanel: $("#detectedPanel"),
-  detectedDocType: $("#detectedDocType"),
-  detectedFieldCount: $("#detectedFieldCount"),
-  fieldRows: $("#fieldRows"),
-  addFieldButton: $("#addFieldButton"),
-  fieldTypePicker: $("#fieldTypePicker"),
-  extractedHintsPanel: $("#extractedHintsPanel"),
-  extractedFieldPills: $("#extractedFieldPills"),
-  runStatus: $("#runStatus"),
-  runMessage: $("#runMessage"),
-  progressText: $("#progressText"),
-  runButton: $("#runButton"),
-  resultSubtitle: $("#resultSubtitle"),
-  resultStatus: $("#resultStatus"),
-  resultRunId: $("#resultRunId"),
-  resultDocumentType: $("#resultDocumentType"),
-  resultPrecision: $("#resultPrecision"),
-  resultRecall: $("#resultRecall"),
-  resultF1: $("#resultF1"),
-  resultPassed: $("#resultPassed"),
-  resultFailed: $("#resultFailed"),
-  resultMissing: $("#resultMissing"),
-  resultPromptProblems: $("#resultPromptProblems"),
-  resultOcrLimitations: $("#resultOcrLimitations"),
-  resultUncertain: $("#resultUncertain"),
-  resultLlmDecisions: $("#resultLlmDecisions"),
-  resultFieldScores: $("#resultFieldScores"),
-  resultRecommendedActions: $("#resultRecommendedActions"),
-  openLatestReport: $("#openLatestReport"),
-  historySearch: $("#historySearch"),
-  refreshReports: $("#refreshReports"),
-  historyMessage: $("#historyMessage"),
-  reportCount: $("#reportCount"),
-  sortF1: $("#sortF1"),
-  sortF1Indicator: $("#sortF1Indicator"),
-  historyBody: $("#historyBody"),
-  historyPrev: $("#historyPrev"),
-  historyNext: $("#historyNext"),
-  historyPageLabel: $("#historyPageLabel"),
-  refreshHealth: $("#refreshHealth"),
-  healthMessage: $("#healthMessage"),
-  healthStatus: $("#healthStatus"),
-  apiBaseUrl: $("#apiBaseUrl"),
-  healthResultsPath: $("#healthResultsPath"),
-  healthOpenAi: $("#healthOpenAi"),
+
+  dashboardError: $("#dashboard-error"),
+  statTotalRuns: $("#stat-total-runs"),
+  statAverageF1: $("#stat-average-f1"),
+  statPromptProblems: $("#stat-prompt-problems"),
+  statOcrLimitations: $("#stat-ocr-limitations"),
+  dashboardHealthBadge: $("#dashboard-health-badge"),
+  latestRunLabel: $("#latest-run-label"),
+  latestPrecision: $("#latest-precision"),
+  latestRecall: $("#latest-recall"),
+  latestF1: $("#latest-f1"),
+  latestMissing: $("#latest-missing"),
+  recentReportsBody: $("#recent-reports-body"),
+
+  evalForm: $("#eval-form"),
+  runId: $("#run-id-input"),
+  loadFieldsButton: $("#load-fields-button"),
+  runFieldsBanner: $("#run-fields-banner"),
+  restorePrompt: $("#restore-prompt"),
+  restoreYes: $("#restore-yes"),
+  restoreNo: $("#restore-no"),
+  detectedPanel: $("#detected-panel"),
+  detectedDocType: $("#detected-doc-type"),
+  detectedFieldCount: $("#detected-field-count"),
+  extractedHints: $("#extracted-hints"),
+  extractedFieldPills: $("#extracted-field-pills"),
+  fieldRows: $("#field-rows"),
+  runMessageBanner: $("#run-message-banner"),
+  progressIndicator: $("#progress-indicator"),
+  progressText: $("#progress-text"),
+  runButton: $("#run-eval-button"),
+  runStatusBadge: $("#run-status-badge"),
+
+  resultSubtitle: $("#result-subtitle"),
+  resultStatusBadge: $("#result-status-badge"),
+  resultF1: $("#result-f1"),
+  resultPassed: $("#result-passed"),
+  resultFailed: $("#result-failed"),
+  resultMissing: $("#result-missing"),
+  resultUncertain: $("#result-uncertain"),
+  resultInsights: $("#result-insights"),
+  resultPromptProblems: $("#result-prompt-problems"),
+  resultOcrLimitations: $("#result-ocr-limitations"),
+  openReportButton: $("#open-report-button"),
+
+  historySearch: $("#history-search"),
+  refreshReportsButton: $("#refresh-reports-button"),
+  historyBanner: $("#history-banner"),
+  historyCount: $("#history-count"),
+  historyBody: $("#history-body"),
+  sortF1Button: $("#sort-f1-button"),
+  sortF1Indicator: $("#sort-f1-indicator"),
+  historyPrev: $("#history-prev"),
+  historyNext: $("#history-next"),
+  historyPageLabel: $("#history-page-label"),
+
+  refreshHealthButton: $("#refresh-health-button"),
+  healthBanner: $("#health-banner"),
+  healthStatusDot: $("#health-status-dot"),
+  healthStatusText: $("#health-status-text"),
+  healthApiBase: $("#health-api-base"),
+  healthResultsPath: $("#health-results-path"),
+  healthAzureOpenai: $("#health-azure-openai"),
+
   toast: $("#toast"),
-  reportModal: $("#reportModal"),
-  closeModal: $("#closeModal"),
-  modalTitle: $("#modalTitle"),
-  modalSubtitle: $("#modalSubtitle"),
-  modalRunId: $("#modalRunId"),
-  modalDocumentType: $("#modalDocumentType"),
-  modalTimestamp: $("#modalTimestamp"),
-  modalF1: $("#modalF1"),
-  reportTabs: $$(".modal-tab"),
-  reportPanels: $$(".report-tab-panel"),
-  legacyReportNote: $("#legacyReportNote"),
-  legacyOcrData: $("#legacyOcrData"),
-  summaryF1: $("#summaryF1"),
-  summaryPassed: $("#summaryPassed"),
-  summaryFailed: $("#summaryFailed"),
-  summaryMissing: $("#summaryMissing"),
-  insightList: $("#insightList"),
-  recommendedActions: $("#recommendedActions"),
-  downloadSummaryReport: $("#downloadSummaryReport"),
-  fieldFilters: $("#fieldFilters"),
-  fieldDetailsList: $("#fieldDetailsList"),
+
+  reportModal: $("#report-modal"),
+  modalCloseButton: $("#modal-close-button"),
+  modalFilename: $("#modal-filename"),
+  modalTitle: $("#modal-title"),
+  modalRunId: $("#modal-run-id"),
+  modalDocType: $("#modal-doc-type"),
+  modalF1: $("#modal-f1"),
+  modalPrecision: $("#modal-precision"),
+  modalRecall: $("#modal-recall"),
+  tabs: $$(".tab"),
+  tabPanels: $$(".tab-panel"),
+  modalLegacyNote: $("#modal-legacy-note"),
+  modalLegacyData: $("#modal-legacy-data"),
+  modalInsights: $("#modal-insights"),
+  modalActions: $("#modal-actions"),
+  modalDownloadButton: $("#modal-download-button"),
+  modalFieldFilters: $("#modal-field-filters"),
+  modalFieldDetails: $("#modal-field-details"),
 };
 
 const api = {
@@ -166,6 +166,8 @@ const api = {
   },
 };
 
+/* ---------- Small shared helpers ---------- */
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -179,21 +181,16 @@ function setText(element, value) {
   if (element) element.textContent = value;
 }
 
-function setHidden(element, hidden) {
-  if (element) element.hidden = hidden;
-}
-
 function setBanner(element, message, type = "error") {
   if (!element) return;
   element.textContent = message;
-  element.className = `banner ${type}`;
-  element.hidden = false;
+  element.className = `banner banner--${type}`;
 }
 
 function clearBanner(element) {
   if (!element) return;
   element.textContent = "";
-  element.hidden = true;
+  element.className = "banner hidden";
 }
 
 function showToast(message) {
@@ -215,6 +212,14 @@ function formatScore(value) {
   if (!Number.isFinite(numericValue)) return "-";
   const percentage = numericValue <= 1 ? numericValue * 100 : numericValue;
   return `${percentage.toFixed(1)}%`;
+}
+
+function f1ScoreClass(value) {
+  const numericValue = Number(value || 0);
+  const percentage = numericValue <= 1 ? numericValue * 100 : numericValue;
+  if (percentage >= 80) return "score-good";
+  if (percentage >= 60) return "score-mid";
+  return "score-bad";
 }
 
 function formatTimestamp(value) {
@@ -283,22 +288,28 @@ function countOcrVerdict(report, verdict) {
   return Object.values(fieldsFor(report)).filter((field) => field?.ocr_search?.verdict === verdict).length;
 }
 
-function countLlmJudgeResults(report) {
-  return Object.values(fieldsFor(report)).filter((field) => field?.llm_judge).length;
+function reportFormat(report) {
+  if (report && report.field_comparison) return "new";
+  if (report && report.ocr_eval) return "legacy";
+  return "unknown";
 }
 
-function isLegacyReport(report) {
-  return !report.field_comparison && Boolean(report.ocr_eval);
-}
+/* ---------- Status/badge mapping ---------- */
 
-function statusClass(status) {
+function fieldRowModifier(status) {
   const normalized = String(status || "").toUpperCase();
-  if (["TP", "PASS"].includes(normalized)) return "completed";
-  if (["FP", "FAIL", "EXTRA"].includes(normalized)) return "failed";
-  if (["FN", "MISSING"].includes(normalized)) return "missing";
-  if (normalized === "PARTIAL") return "partial";
-  if (["GREY", "GREY_UNRESOLVED", "UNCERTAIN", "EXTRA_INFO"].includes(normalized)) return "unresolved";
-  return "partial";
+  if (["TP", "PASS"].includes(normalized)) return "tp";
+  if (["FP", "FAIL", "EXTRA", "PARTIAL"].includes(normalized)) return "fp";
+  if (["FN", "MISSING"].includes(normalized)) return "fn";
+  return "grey";
+}
+
+function statusBadgeClass(status) {
+  const normalized = String(status || "").toUpperCase();
+  if (["TP", "PASS"].includes(normalized)) return "success";
+  if (["FP", "FAIL", "EXTRA"].includes(normalized)) return "error";
+  if (["FN", "MISSING", "PARTIAL"].includes(normalized)) return "warning";
+  return "muted";
 }
 
 function statusLabel(status) {
@@ -309,66 +320,55 @@ function statusLabel(status) {
   if (normalized === "GREY" || normalized === "GREY_UNRESOLVED") return "UNCERTAIN";
   if (normalized === "EXTRA_INFO") return "EXTRA INFO";
   if (normalized === "PARTIAL") return "PARTIAL";
+  if (normalized === "PRESENT" || normalized === "ABSENT") return normalized;
   return normalized || "PARTIAL";
 }
 
-function statusPill(status) {
-  return `<span class="status-pill ${statusClass(status)}">${escapeHtml(statusLabel(status))}</span>`;
+function statusBadge(status) {
+  return `<span class="badge badge--${statusBadgeClass(status)}">${escapeHtml(statusLabel(status))}</span>`;
 }
 
-function reportActionButtons(name) {
-  return `${reportActionButton(name, "view")}${reportActionButton(name, "delete")}`;
+function fieldGroup(status) {
+  const normalized = String(status || "").toUpperCase();
+  if (normalized === "TP") return "passed";
+  if (["FP", "EXTRA", "PARTIAL"].includes(normalized)) return "failed";
+  if (normalized === "FN") return "missing";
+  return "uncertain";
 }
 
-function reportActionButton(name, action) {
-  const safeName = escapeHtml(name);
-  const isDelete = action === "delete";
-  return `
-    <button class="icon-action ${isDelete ? "danger" : ""}" type="button" data-action="${action}" data-report="${safeName}" title="${isDelete ? "Delete" : "View"} report" aria-label="${isDelete ? "Delete" : "View"} report">
-      <span class="ti ${isDelete ? "ti-trash" : "ti-eye"}"></span>
-    </button>
-  `;
+/* ---------- Navigation ---------- */
+
+function showPage(pageName) {
+  const target = VALID_PAGES.includes(pageName) ? pageName : "dashboard";
+  els.pages.forEach((page) => {
+    const name = page.id.replace("page-", "");
+    page.classList.toggle("hidden", name !== target);
+  });
+  els.navItems.forEach((item) => item.classList.toggle("nav-item--active", item.dataset.page === target));
+  sessionStorage.setItem(PAGE_STORAGE_KEY, target);
 }
 
-function showSection(sectionName) {
-  els.views.forEach((view) => view.classList.toggle("active", view.id === sectionName));
-  els.navItems.forEach((item) => item.classList.toggle("active", item.dataset.section === sectionName));
+function restoreActivePage() {
+  showPage(sessionStorage.getItem(PAGE_STORAGE_KEY));
 }
+
+function wireNavigation() {
+  els.navItems.forEach((button) => {
+    button.addEventListener("click", () => showPage(button.dataset.page));
+  });
+  $$("[data-nav]").forEach((button) => {
+    button.addEventListener("click", () => showPage(button.dataset.nav));
+  });
+}
+
+/* ---------- Field entry: shared ---------- */
 
 function entryNodes() {
-  return $$(".field-entry");
+  return $$(".field-row, .table-block");
 }
 
 function entryCount() {
   return entryNodes().length;
-}
-
-function inputValidClass(input, isValid, isEmpty) {
-  input.classList.toggle("invalid", !isEmpty && !isValid);
-  input.classList.toggle("valid", false);
-}
-
-function validateNameInput(input, errorElement, message = "camelCase only - e.g. invoiceNo, totalAmount", showError = true) {
-  const value = input.value.trim();
-  const isEmpty = value === "";
-  const isValid = FIELD_NAME_PATTERN.test(value);
-  inputValidClass(input, isValid, isEmpty);
-  if (errorElement) {
-    errorElement.textContent = message;
-    errorElement.hidden = !showError || isEmpty || isValid;
-  }
-  return { value, isEmpty, isValid };
-}
-
-function autoGrowTextarea(textarea) {
-  textarea.style.height = "auto";
-  textarea.style.height = `${Math.max(textarea.scrollHeight, 96)}px`;
-}
-
-function removeEntry(entry) {
-  entry.remove();
-  if (!entryNodes().length) addSimpleFieldRow();
-  updateRunButtonState();
 }
 
 function ensureEntryLimit() {
@@ -379,196 +379,40 @@ function ensureEntryLimit() {
   return true;
 }
 
-function addSimpleFieldRow(name = "", value = "") {
-  if (!ensureEntryLimit()) return;
-  const row = document.createElement("div");
-  row.className = "field-entry field-entry-row";
-  row.dataset.entryType = "simple";
-  row.innerHTML = `
-    <div class="field-input-wrap">
-      <input data-field-name type="text" placeholder="fieldName" value="${escapeHtml(name)}" autocomplete="off" />
-      <small data-field-error class="field-error" hidden>camelCase only - e.g. invoiceNo, totalAmount</small>
-    </div>
-    <div class="field-input-wrap">
-      <input data-field-value type="text" placeholder="expected value" value="${escapeHtml(value)}" />
-      <small data-field-warning class="field-warning" hidden>Empty value - this field will be marked as MISSING if not extracted</small>
-    </div>
-    <button class="icon-button muted remove-field" type="button" title="Remove field" aria-label="Remove field">
-      <span class="ti ti-x"></span>
-    </button>
-  `;
-  els.fieldRows.appendChild(row);
-  row.querySelector("[data-field-name]").addEventListener("input", updateRunButtonState);
-  row.querySelector("[data-field-value]").addEventListener("input", updateRunButtonState);
-  row.querySelector(".remove-field").addEventListener("click", () => removeEntry(row));
-  updateRunButtonState();
-}
-
-function addTextBlockRow(name = "", value = "") {
-  if (!ensureEntryLimit()) return;
-  const row = document.createElement("div");
-  row.className = "field-entry text-block-row";
-  row.dataset.entryType = "text_block";
-  row.innerHTML = `
-    <div class="field-input-wrap text-block-name">
-      <input data-field-name type="text" placeholder="fieldName" value="${escapeHtml(name)}" autocomplete="off" />
-      <small data-field-error class="field-error" hidden>camelCase only - e.g. invoiceNo, totalAmount</small>
-    </div>
-    <div class="field-input-wrap text-block-value">
-      <textarea data-field-value rows="3" placeholder="Enter multiline value...">${escapeHtml(value)}</textarea>
-    </div>
-    <button class="icon-button muted remove-field" type="button" title="Remove field" aria-label="Remove field">
-      <span class="ti ti-x"></span>
-    </button>
-  `;
-  els.fieldRows.appendChild(row);
-  const textarea = row.querySelector("textarea");
-  row.querySelector("[data-field-name]").addEventListener("input", updateRunButtonState);
-  textarea.addEventListener("input", () => {
-    autoGrowTextarea(textarea);
-    updateRunButtonState();
-  });
-  row.querySelector(".remove-field").addEventListener("click", () => removeEntry(row));
-  autoGrowTextarea(textarea);
-  updateRunButtonState();
-}
-
-function tableColumns(table) {
-  return Array.from(table.querySelectorAll("[data-column-name]")).map((input) => input.value.trim());
-}
-
-function tableRows(table) {
-  return Array.from(table.querySelectorAll(".table-data-row")).map((row) => {
-    return Array.from(row.querySelectorAll("[data-cell]")).map((input) => input.value.trim());
-  });
-}
-
-function rebuildTableRows(table, existingRows = tableRows(table)) {
-  const columns = tableColumns(table);
-  const labels = table.querySelector("[data-table-column-labels]");
-  const rowsContainer = table.querySelector("[data-table-rows]");
-  labels.innerHTML = columns.map((column) => `<span>${escapeHtml(column || "Column")}</span>`).join("");
-  labels.hidden = columns.length === 0;
-  rowsContainer.innerHTML = "";
-  existingRows.forEach((rowValues) => addTableDataRow(table, rowValues, false));
-  table.querySelector("[data-add-row]").disabled = columns.length === 0 || tableRows(table).length >= MAX_TABLE_ROWS;
-}
-
-function addTableColumn(table, columnName = "") {
-  const columnsContainer = table.querySelector("[data-table-columns]");
-  if (columnsContainer.querySelectorAll("[data-column-name]").length >= MAX_TABLE_COLUMNS) {
-    showToast("Maximum 10 columns per table");
-    return;
+function validateNameInput(input, errorElement = null, message = "camelCase only — no underscores or spaces", showError = true) {
+  const value = input.value.trim();
+  const isEmpty = value === "";
+  const isValid = FIELD_NAME_PATTERN.test(value);
+  let displayMessage = message;
+  if (!isEmpty && !isValid) {
+    if (STARTS_WITH_NUMBER_PATTERN.test(value)) {
+      displayMessage = "Field name cannot start with a number";
+    } else if (RESERVED_CHARS_PATTERN.test(value)) {
+      displayMessage = "Field name cannot contain [ ] { } : or quotes";
+    }
   }
-  const existingRows = tableRows(table);
-  const column = document.createElement("div");
-  column.className = "table-column-input";
-  column.innerHTML = `
-    <input data-column-name type="text" placeholder="columnName (e.g. description)" value="${escapeHtml(columnName)}" />
-    <button class="icon-button muted" type="button" title="Remove column" aria-label="Remove column">
-      <span class="ti ti-x"></span>
-    </button>
-    <small data-column-error class="field-error" hidden>camelCase only - e.g. invoiceNo, totalAmount</small>
-  `;
-  columnsContainer.appendChild(column);
-  const input = column.querySelector("[data-column-name]");
-  input.addEventListener("input", () => {
-    rebuildTableRows(table);
-    updateRunButtonState();
-  });
-  column.querySelector("button").addEventListener("click", () => {
-    const columnIndex = Array.from(columnsContainer.children).indexOf(column);
-    const currentRows = tableRows(table);
-    column.remove();
-    const adjustedRows = currentRows.map((row) => row.filter((_cell, index) => index !== columnIndex));
-    rebuildTableRows(table, adjustedRows);
-    updateRunButtonState();
-  });
-  rebuildTableRows(table, existingRows);
+  input.classList.toggle("is-invalid", !isEmpty && !isValid);
+  input.title = !isEmpty && !isValid ? displayMessage : "";
+  if (errorElement) {
+    errorElement.textContent = displayMessage;
+    errorElement.hidden = !showError || isEmpty || isValid;
+  }
+  return { value, isEmpty, isValid };
+}
+
+function autoGrowTextarea(textarea) {
+  textarea.style.height = "auto";
+  textarea.style.height = `${Math.max(textarea.scrollHeight, 60)}px`;
+}
+
+function removeEntry(entry) {
+  entry.remove();
+  if (!entryNodes().length) createFieldRow("simple");
   updateRunButtonState();
-}
-
-function addTableDataRow(table, values = [], shouldUpdate = true) {
-  const columns = tableColumns(table);
-  if (!columns.length) {
-    showToast("Add at least one column first");
-    return;
-  }
-  if (tableRows(table).length >= MAX_TABLE_ROWS) {
-    showToast("Maximum 50 rows per table");
-    return;
-  }
-  const row = document.createElement("div");
-  row.className = "table-data-row";
-  row.innerHTML = `
-    ${columns
-      .map((column, index) => `<input data-cell type="text" placeholder="${escapeHtml(column || "value")}" value="${escapeHtml(values[index] || "")}" />`)
-      .join("")}
-    <button class="icon-button muted" type="button" title="Remove row" aria-label="Remove row">
-      <span class="ti ti-x"></span>
-    </button>
-  `;
-  table.querySelector("[data-table-rows]").appendChild(row);
-  row.querySelectorAll("[data-cell]").forEach((input) => input.addEventListener("input", updateRunButtonState));
-  row.querySelector("button").addEventListener("click", () => {
-    row.remove();
-    updateRunButtonState();
-  });
-  if (shouldUpdate) updateRunButtonState();
-}
-
-function addLineItemsTable(entry = {}) {
-  if (!ensureEntryLimit()) return;
-  const table = document.createElement("div");
-  table.className = "field-entry table-entry-card";
-  table.dataset.entryType = "line_items";
-  table.innerHTML = `
-    <div class="table-entry-header">
-      <span class="table-badge">TABLE</span>
-      <div class="field-input-wrap table-name-wrap">
-        <input data-field-name type="text" placeholder="lineItems" value="${escapeHtml(entry.fieldName || "")}" autocomplete="off" />
-        <small data-field-error class="field-error" hidden>camelCase only - e.g. invoiceNo, totalAmount</small>
-      </div>
-      <button data-add-column class="secondary-button" type="button">
-        <span class="ti ti-plus" aria-hidden="true"></span>
-        Add column
-      </button>
-      <button class="icon-button muted remove-field" type="button" title="Remove table" aria-label="Remove table">
-        <span class="ti ti-x"></span>
-      </button>
-    </div>
-    <div data-table-warning class="field-warning" hidden></div>
-    <div data-table-columns class="table-columns-row"></div>
-    <div data-table-column-labels class="table-column-labels"></div>
-    <div data-table-rows class="table-rows"></div>
-    <button data-add-row class="table-add-row-btn secondary-button" type="button">+ Add row</button>
-  `;
-  els.fieldRows.appendChild(table);
-  table.querySelector("[data-field-name]").addEventListener("input", updateRunButtonState);
-  table.querySelector("[data-add-column]").addEventListener("click", () => addTableColumn(table));
-  table.querySelector("[data-add-row]").addEventListener("click", () => addTableDataRow(table));
-  table.querySelector(".remove-field").addEventListener("click", () => removeEntry(table));
-  (entry.columns || []).forEach((column) => addTableColumn(table, column));
-  (entry.rows || []).forEach((row) => addTableDataRow(table, row, false));
-  updateRunButtonState();
-}
-
-function addFieldRow(name = "", value = "") {
-  addSimpleFieldRow(name, value);
-}
-
-function addEntryByType(type, data = {}) {
-  if (type === "text_block") {
-    addTextBlockRow(data.fieldName || data.name || "", data.value || "");
-  } else if (type === "line_items") {
-    addLineItemsTable(data);
-  } else {
-    addSimpleFieldRow(data.fieldName || data.name || "", data.value || "");
-  }
 }
 
 function entryHasContent(entry) {
-  if (entry.dataset.entryType === "line_items") {
+  if (entry.classList.contains("table-block")) {
     return Boolean(
       entry.querySelector("[data-field-name]").value.trim()
         || tableColumns(entry).some(Boolean)
@@ -591,12 +435,221 @@ function hasSubmittableEntry() {
 function updateRunButtonState() {
   const hasRunId = els.runId.value.trim().length > 0;
   entryNodes().forEach((entry) => {
-    const error = entry.querySelector("[data-field-error]");
-    validateNameInput(entry.querySelector("[data-field-name]"), error, undefined, false);
+    validateNameInput(entry.querySelector("[data-field-name]"), null, undefined, false);
   });
   els.runButton.disabled = !(hasRunId && hasSubmittableEntry());
-  els.addFieldButton.disabled = entryCount() >= MAX_FIELDS;
+  $$("#add-field-chips .chip").forEach((chip) => {
+    chip.disabled = entryCount() >= MAX_FIELDS;
+  });
 }
+
+/* ---------- Field entry: simple / multiline rows ---------- */
+
+function valueControlHtml(isMultiline, value) {
+  if (isMultiline) {
+    return `<textarea class="field-value textarea-input" data-field-value placeholder="Enter multiline value...">${escapeHtml(value)}</textarea>`;
+  }
+  return `<input class="field-value text-input" data-field-value type="text" placeholder="expected value" value="${escapeHtml(value)}" />`;
+}
+
+function wireValueControl(control) {
+  control.addEventListener("input", () => {
+    if (control.tagName === "TEXTAREA") autoGrowTextarea(control);
+    updateRunButtonState();
+  });
+  if (control.tagName === "TEXTAREA") autoGrowTextarea(control);
+}
+
+function toggleFieldRowType(row) {
+  const wrap = row.querySelector(".field-value-wrap");
+  const control = row.querySelector("[data-field-value]");
+  const currentValue = control.value;
+  const nextIsMultiline = row.dataset.entryType !== "multiline";
+  row.dataset.entryType = nextIsMultiline ? "multiline" : "simple";
+  const toggleButton = wrap.querySelector("[data-toggle-multiline]");
+  control.remove();
+  toggleButton.insertAdjacentHTML("beforebegin", valueControlHtml(nextIsMultiline, currentValue));
+  const newControl = wrap.querySelector("[data-field-value]");
+  wireValueControl(newControl);
+  toggleButton.title = `Switch to ${nextIsMultiline ? "single line" : "multiline"}`;
+  updateRunButtonState();
+}
+
+function createFieldRow(type = "simple", name = "", value = "") {
+  if (!ensureEntryLimit()) return null;
+  const isMultiline = type === "multiline";
+  const row = document.createElement("div");
+  row.className = "field-row";
+  row.dataset.entryType = isMultiline ? "multiline" : "simple";
+  row.innerHTML = `
+    <input class="field-name text-input" data-field-name type="text" placeholder="fieldName" value="${escapeHtml(name)}" autocomplete="off" />
+    <div class="field-value-wrap">
+      ${valueControlHtml(isMultiline, value)}
+      <button class="value-toggle" type="button" data-toggle-multiline title="Switch to ${isMultiline ? "single line" : "multiline"}">&#8597;</button>
+    </div>
+    <button class="remove-btn" type="button" data-remove title="Remove field">&times;</button>
+  `;
+  els.fieldRows.appendChild(row);
+  const nameInput = row.querySelector("[data-field-name]");
+  nameInput.addEventListener("input", () => {
+    validateNameInput(nameInput);
+    updateRunButtonState();
+  });
+  wireValueControl(row.querySelector("[data-field-value]"));
+  row.querySelector("[data-toggle-multiline]").addEventListener("click", () => toggleFieldRowType(row));
+  row.querySelector("[data-remove]").addEventListener("click", () => removeEntry(row));
+  updateRunButtonState();
+  return row;
+}
+
+/* ---------- Field entry: table blocks ---------- */
+
+function tableColumns(block) {
+  return Array.from(block.querySelectorAll("[data-column-name]")).map((input) => input.value.trim());
+}
+
+function tableRows(block) {
+  return Array.from(block.querySelectorAll("[data-table-rows] tr")).map((row) => {
+    return Array.from(row.querySelectorAll("[data-cell]")).map((input) => input.value.trim());
+  });
+}
+
+function resizeColumnInput(input) {
+  input.size = Math.max(input.value.length || input.placeholder.length, 6);
+}
+
+function rebuildTableRows(block, existingRows = tableRows(block)) {
+  const columns = tableColumns(block);
+  const headerRow = block.querySelector("[data-column-headers]");
+  const rowsBody = block.querySelector("[data-table-rows]");
+  headerRow.innerHTML = `${columns.map((column) => `<th>${escapeHtml(column || "Column")}</th>`).join("")}<th></th>`;
+  rowsBody.innerHTML = "";
+  existingRows.forEach((rowValues) => addTableDataRow(block, rowValues, false));
+  const addRowButton = block.querySelector("[data-add-row]");
+  addRowButton.disabled = columns.length === 0 || tableRows(block).length >= MAX_TABLE_ROWS;
+}
+
+function addTableColumn(block, columnName = "") {
+  const columnsContainer = block.querySelector("[data-columns]");
+  if (columnsContainer.querySelectorAll("[data-column-name]").length >= MAX_TABLE_COLUMNS) {
+    showToast("Maximum 10 columns per table");
+    return;
+  }
+  const existingRows = tableRows(block);
+  const pill = document.createElement("span");
+  pill.className = "col-pill";
+  pill.innerHTML = `
+    <input class="col-pill__input" data-column-name type="text" placeholder="columnName" value="${escapeHtml(columnName)}" />
+    <button class="col-pill__remove" type="button" title="Remove column">&times;</button>
+  `;
+  columnsContainer.appendChild(pill);
+  const input = pill.querySelector("[data-column-name]");
+  resizeColumnInput(input);
+  input.addEventListener("input", () => {
+    const result = validateNameInput(input, null, undefined, false);
+    pill.classList.toggle("is-invalid", !result.isEmpty && !result.isValid);
+    resizeColumnInput(input);
+    rebuildTableRows(block);
+    updateRunButtonState();
+  });
+  pill.querySelector(".col-pill__remove").addEventListener("click", () => {
+    const columnIndex = Array.from(columnsContainer.children).indexOf(pill);
+    const currentRows = tableRows(block);
+    pill.remove();
+    const adjustedRows = currentRows.map((row) => row.filter((_cell, index) => index !== columnIndex));
+    rebuildTableRows(block, adjustedRows);
+    updateRunButtonState();
+  });
+  rebuildTableRows(block, existingRows);
+  updateRunButtonState();
+}
+
+function addTableDataRow(block, values = [], shouldUpdate = true) {
+  const columns = tableColumns(block);
+  if (!columns.length) {
+    showToast("Add at least one column first");
+    return;
+  }
+  if (tableRows(block).length >= MAX_TABLE_ROWS) {
+    showToast("Maximum 50 rows per table");
+    return;
+  }
+  const row = document.createElement("tr");
+  row.innerHTML = `
+    ${columns
+      .map((column, index) => `<td><input class="text-input" data-cell type="text" placeholder="${escapeHtml(column || "value")}" value="${escapeHtml(values[index] || "")}" /></td>`)
+      .join("")}
+    <td><button class="remove-btn" type="button" title="Remove row">&times;</button></td>
+  `;
+  block.querySelector("[data-table-rows]").appendChild(row);
+  row.querySelectorAll("[data-cell]").forEach((input) => input.addEventListener("input", updateRunButtonState));
+  row.querySelector("button").addEventListener("click", () => {
+    row.remove();
+    updateRunButtonState();
+  });
+  if (shouldUpdate) updateRunButtonState();
+}
+
+function createTableBlock(entry = {}) {
+  if (!ensureEntryLimit()) return null;
+  const block = document.createElement("div");
+  block.className = "table-block";
+  block.dataset.entryType = "table";
+  block.innerHTML = `
+    <div class="table-block__header">
+      <span class="table-tag">TABLE</span>
+      <input class="field-name text-input" data-field-name type="text" placeholder="lineItems" value="${escapeHtml(entry.fieldName || "")}" autocomplete="off" />
+      <div class="table-block__spacer"></div>
+      <button class="btn-add-column" type="button" data-add-column>+ add column</button>
+      <button class="remove-btn" type="button" data-remove title="Remove table">&times;</button>
+    </div>
+    <div class="col-pill-row" data-columns></div>
+    <table class="table-block__data">
+      <thead><tr data-column-headers></tr></thead>
+      <tbody data-table-rows></tbody>
+    </table>
+    <button class="add-row-link" type="button" data-add-row>+ add row</button>
+  `;
+  els.fieldRows.appendChild(block);
+  const nameInput = block.querySelector("[data-field-name]");
+  nameInput.addEventListener("input", () => {
+    validateNameInput(nameInput);
+    updateRunButtonState();
+  });
+  block.querySelector("[data-add-column]").addEventListener("click", () => addTableColumn(block));
+  block.querySelector("[data-add-row]").addEventListener("click", () => addTableDataRow(block));
+  block.querySelector("[data-remove]").addEventListener("click", () => removeEntry(block));
+  (entry.columns || []).forEach((column) => addTableColumn(block, column));
+  (entry.rows || []).forEach((row) => addTableDataRow(block, row, false));
+  updateRunButtonState();
+  return block;
+}
+
+function addEntryByType(type, data = {}) {
+  const normalizedType = type === "text_block" ? "multiline" : type === "line_items" ? "table" : type;
+  if (normalizedType === "multiline") {
+    createFieldRow("multiline", data.fieldName || data.name || "", data.value || "");
+  } else if (normalizedType === "table") {
+    createTableBlock(data);
+  } else {
+    createFieldRow("simple", data.fieldName || data.name || "", data.value || "");
+  }
+}
+
+function wireAddFieldChips() {
+  const chips = $$("#add-field-chips .chip");
+  chips.forEach((chip) => {
+    chip.addEventListener("click", () => {
+      const type = chip.dataset.addType;
+      if (type === "multiline") createFieldRow("multiline");
+      else if (type === "table") createTableBlock();
+      else createFieldRow("simple");
+      chips.forEach((other) => other.classList.toggle("chip--active", other === chip));
+    });
+  });
+}
+
+/* ---------- Collect + validate golden fields ---------- */
 
 function collectGoldenFields(showErrors = false) {
   const fields = {};
@@ -606,20 +659,16 @@ function collectGoldenFields(showErrors = false) {
   const names = new Set();
 
   entryNodes().forEach((entry) => {
-    const type = entry.dataset.entryType || "simple";
+    const isTable = entry.classList.contains("table-block");
+    const type = isTable ? "table" : entry.dataset.entryType || "simple";
     const nameInput = entry.querySelector("[data-field-name]");
-    const fieldError = entry.querySelector("[data-field-error]");
-    const nameResult = validateNameInput(nameInput, fieldError, undefined, showErrors);
+    const nameResult = validateNameInput(nameInput, null, undefined, showErrors);
     const name = nameResult.value;
 
-    if (!name && type !== "line_items") return;
+    if (!name && type !== "table") return;
     if (!name && !entryHasContent(entry)) return;
     if (!name && entryHasContent(entry)) {
       errors.push("Field name is required for entries with values");
-      if (fieldError) {
-        fieldError.textContent = "Field name is required";
-        fieldError.hidden = false;
-      }
       return;
     }
     if (!nameResult.isValid) {
@@ -627,62 +676,38 @@ function collectGoldenFields(showErrors = false) {
       return;
     }
     if (names.has(name)) {
-      errors.push(`Field name ${name} is used more than once`);
-      if (fieldError) {
-        fieldError.textContent = `Field name ${name} is used more than once`;
-        fieldError.hidden = false;
-      }
+      errors.push(`Field name '${name}' is used more than once. Each field name must be unique.`);
       return;
     }
     names.add(name);
 
-    if (type === "line_items") {
-      const warning = entry.querySelector("[data-table-warning]");
+    if (type === "table") {
       const columns = tableColumns(entry);
       const validColumns = [];
       let hasColumnError = false;
       entry.querySelectorAll("[data-column-name]").forEach((input) => {
-        const error = input.parentElement.querySelector("[data-column-error]");
-        const result = validateNameInput(input, error, undefined, showErrors);
-        if (showErrors && result.isEmpty && error) {
-          error.textContent = "Column name is required";
-          error.hidden = false;
-        }
+        const result = validateNameInput(input, null, undefined, showErrors);
         if (!result.isValid) hasColumnError = true;
         validColumns.push(result.value);
       });
       if (!columns.length) {
-        errors.push(`${name}: Add at least one column`);
-        if (warning) {
-          warning.textContent = "Add at least one column";
-          warning.hidden = false;
-        }
+        errors.push(`Table '${name}' has no columns. Add at least one column before running evaluation.`);
         return;
       }
       if (hasColumnError) {
         errors.push(`${name}: column names must be camelCase`);
         return;
       }
-
       const rows = tableRows(entry).filter((row) => row.some((cell) => cell.trim() !== ""));
       if (!rows.length) {
-        const message = `Table ${name} has no rows - it will check only that the field exists in extraction output`;
-        warnings.push(message);
-        if (warning) {
-          warning.textContent = message;
-          warning.hidden = false;
-        }
-      } else if (warning) {
-        warning.hidden = true;
+        warnings.push(`Table ${name} has no rows - it will check only that the field exists in extraction output`);
       }
       fields[name] = rows.map((row) => Object.fromEntries(validColumns.map((column, index) => [column, row[index] || ""])));
-      entries.push({ type: "line_items", fieldName: name, columns: validColumns, rows });
+      entries.push({ type: "table", fieldName: name, columns: validColumns, rows });
       return;
     }
 
     const value = entry.querySelector("[data-field-value]").value.trim();
-    const warning = entry.querySelector("[data-field-warning]");
-    if (warning) warning.hidden = !(showErrors && value === "");
     fields[name] = value;
     entries.push({ type, fieldName: name, value });
   });
@@ -691,11 +716,13 @@ function collectGoldenFields(showErrors = false) {
   return { fields, entries, errors, warnings, validCount: entries.length };
 }
 
+/* ---------- Extracted field hints ---------- */
+
 function renderExtractedHints(fields, metadata = {}) {
   const entries = Object.entries(fields || {});
   if (!entries.length) {
-    setBanner(els.runFieldsMessage, "No fields detected in this run. The extraction step may not have produced output.", "error");
-    els.extractedHintsPanel.hidden = true;
+    setBanner(els.runFieldsBanner, "No fields detected in this run. The extraction step may not have produced output.", "error");
+    els.extractedHints.classList.add("hidden");
     return;
   }
   els.extractedFieldPills.innerHTML = entries
@@ -705,9 +732,9 @@ function renderExtractedHints(fields, metadata = {}) {
         const columns = fieldMeta.field_schema || [];
         return `
           <article class="table-hint-card">
-            <strong>This run has a table field: ${escapeHtml(field)}</strong>
+            <strong>Table field: ${escapeHtml(field)}</strong>
             <span>${Number(fieldMeta.row_count || 0)} rows, columns: ${escapeHtml(columns.join(", ") || "-")}</span>
-            <button class="secondary-button" type="button" data-table-hint="${escapeHtml(field)}">Add as table</button>
+            <button class="btn btn--secondary btn--small" type="button" data-table-hint="${escapeHtml(field)}">Add as table</button>
           </article>
         `;
       }
@@ -716,9 +743,11 @@ function renderExtractedHints(fields, metadata = {}) {
       return `<button class="field-pill" type="button" data-field="${escapeHtml(field)}" data-entry-type="${type}" title="${escapeHtml(title)}">${escapeHtml(field)}</button>`;
     })
     .join("");
-  els.extractedHintsPanel.hidden = false;
-  els.extractedHintsPanel.open = true;
+  els.extractedHints.classList.remove("hidden");
+  els.extractedHints.open = true;
 }
+
+/* ---------- Session storage restore ---------- */
 
 function restoreStorageKey() {
   const runId = els.runId.value.trim();
@@ -727,7 +756,7 @@ function restoreStorageKey() {
 
 function maybeOfferRestore() {
   const key = restoreStorageKey();
-  els.restorePrompt.hidden = !(key && sessionStorage.getItem(key));
+  els.restorePrompt.classList.toggle("hidden", !(key && sessionStorage.getItem(key)));
 }
 
 function saveSessionFields(runId, fields) {
@@ -742,23 +771,42 @@ function restoreSessionFields() {
   try {
     const savedEntries = JSON.parse(raw);
     els.fieldRows.innerHTML = "";
+    let restoredCount = 0;
     if (Array.isArray(savedEntries)) {
-      savedEntries.forEach((entry) => addEntryByType(entry.type || "simple", entry));
+      savedEntries.forEach((entry) => {
+        try {
+          addEntryByType(entry.type || "simple", entry);
+          restoredCount += 1;
+        } catch (error) {
+          console.error("Skipping field entry that failed to restore from session storage:", entry, error);
+        }
+      });
     } else {
-      Object.entries(savedEntries).forEach(([field, value]) => addFieldRow(field, value));
+      Object.entries(savedEntries).forEach(([field, value]) => {
+        try {
+          createFieldRow("simple", field, value);
+          restoredCount += 1;
+        } catch (error) {
+          console.error("Skipping field entry that failed to restore from session storage:", field, error);
+        }
+      });
     }
-    els.restorePrompt.hidden = true;
+    if (!restoredCount) createFieldRow("simple");
+    els.restorePrompt.classList.add("hidden");
     showToast("Previous values restored");
-  } catch {
+  } catch (error) {
+    console.error("Failed to restore session fields:", error);
     sessionStorage.removeItem(key);
   }
 }
 
+/* ---------- Run evaluation flow ---------- */
+
 async function loadRunFields() {
   const runId = els.runId.value.trim();
-  clearBanner(els.runFieldsMessage);
+  clearBanner(els.runFieldsBanner);
   if (!runId) {
-    setBanner(els.runFieldsMessage, "Enter a DocsAI Run ID first.", "error");
+    setBanner(els.runFieldsBanner, "Enter a DocsAI Run ID first.", "error");
     return;
   }
   setButtonLoading(els.loadFieldsButton, true, "Loading...");
@@ -769,17 +817,25 @@ async function loadRunFields() {
     state.documentType = payload.document_type || "unknown";
     setText(els.detectedDocType, state.documentType);
     setText(els.detectedFieldCount, payload.field_count ?? Object.keys(state.extractedFields).length);
-    els.detectedPanel.hidden = false;
+    els.detectedPanel.classList.remove("hidden");
     renderExtractedHints(state.extractedFields, state.fieldMetadata);
-    const message = payload.warning ? `Loaded fields. ${payload.warning}` : "Run fields loaded.";
-    setBanner(els.runFieldsMessage, message, "success");
+    if (payload.extraction_warning) {
+      setBanner(
+        els.runFieldsBanner,
+        "Fields loaded via heuristic step detection. Verify these are the correct extraction fields before running eval.",
+        "warning",
+      );
+    } else {
+      const message = payload.warning ? `Loaded fields. ${payload.warning}` : "Run fields loaded.";
+      setBanner(els.runFieldsBanner, message, "success");
+    }
   } catch (error) {
     state.extractedFields = {};
     state.fieldMetadata = {};
     state.documentType = "";
-    els.detectedPanel.hidden = true;
-    els.extractedHintsPanel.hidden = true;
-    setBanner(els.runFieldsMessage, error.message, "error");
+    els.detectedPanel.classList.add("hidden");
+    els.extractedHints.classList.add("hidden");
+    setBanner(els.runFieldsBanner, error.message, "error");
   } finally {
     setButtonLoading(els.loadFieldsButton, false);
     maybeOfferRestore();
@@ -789,7 +845,7 @@ async function loadRunFields() {
 
 function startProgressMessages() {
   let index = 0;
-  els.progressText.hidden = false;
+  els.progressIndicator.classList.remove("hidden");
   els.progressText.textContent = progressMessages[index];
   state.progressTimer = window.setInterval(() => {
     index = Math.min(index + 1, progressMessages.length - 1);
@@ -800,7 +856,7 @@ function startProgressMessages() {
 function stopProgressMessages() {
   if (state.progressTimer) window.clearInterval(state.progressTimer);
   state.progressTimer = null;
-  els.progressText.hidden = true;
+  els.progressIndicator.classList.add("hidden");
 }
 
 function rememberCurrentRun(report) {
@@ -810,246 +866,22 @@ function rememberCurrentRun(report) {
   if (name) state.reportCache.set(name, report);
 }
 
-function renderRunResult(report) {
-  const scores = scoresFor(report);
-  const summary = summaryFor(report);
-  setText(els.resultSubtitle, reportName(report) || "Evaluation completed");
-  setText(els.resultStatus, "COMPLETED");
-  els.resultStatus.className = "status-pill completed";
-  setText(els.resultRunId, report.run_id || "-");
-  setText(els.resultDocumentType, report.document_type || "-");
-  setText(els.resultPrecision, formatScore(scores.precision));
-  setText(els.resultRecall, formatScore(scores.recall));
-  setText(els.resultF1, formatScore(scores.f1));
-  setText(els.resultPassed, summary.passed);
-  setText(els.resultFailed, summary.failed);
-  setText(els.resultMissing, summary.missing);
-  setText(els.resultPromptProblems, summary.promptProblems);
-  setText(els.resultOcrLimitations, summary.ocrLimitations);
-  setText(els.resultUncertain, summary.uncertain);
-  setText(els.resultLlmDecisions, report.summary?.uncertain_resolved ?? countLlmJudgeResults(report));
-  setText(els.resultFieldScores, report.summary?.total_fields ?? Object.keys(fieldsFor(report)).length);
-  setText(els.resultRecommendedActions, (report.recommended_actions || []).length);
-  els.openLatestReport.disabled = false;
-}
-
-async function runEvaluation(event) {
-  event.preventDefault();
-  clearBanner(els.runMessage);
-  const { fields, entries, errors, warnings, validCount } = collectGoldenFields(true);
-  if (!els.runId.value.trim()) {
-    setBanner(els.runMessage, "Enter a DocsAI Run ID before running evaluation.", "error");
-    return;
-  }
-  if (errors.length) {
-    setBanner(els.runMessage, errors.join(" | "), "error");
-    return;
-  }
-  if (warnings.length) setBanner(els.runMessage, warnings.join(" | "), "success");
-  els.runStatus.textContent = "RUNNING";
-  els.runStatus.className = "status-pill partial";
-  setButtonLoading(els.runButton, true, "Running...");
-  startProgressMessages();
-  try {
-    const runId = els.runId.value.trim();
-    const report = await api.runEvaluation({ run_id: runId, golden_fields: fields });
-    saveSessionFields(runId, entries);
-    rememberCurrentRun(report);
-    renderRunResult(report);
-    renderLatest(report);
-    els.runStatus.textContent = "COMPLETED";
-    els.runStatus.className = "status-pill completed";
-    setBanner(els.runMessage, "Evaluation completed successfully.", "success");
-    await Promise.all([loadSummary(), loadReports()]);
-    openReportModal(report);
-  } catch (error) {
-    els.runStatus.textContent = "FAILED";
-    els.runStatus.className = "status-pill failed";
-    setBanner(els.runMessage, error.message, "error");
-  } finally {
-    stopProgressMessages();
-    setButtonLoading(els.runButton, false);
-    updateRunButtonState();
-  }
-}
-
-function rowForReport(report) {
-  const scores = scoresFor(report);
-  const summary = summaryFor(report);
-  return `
-    <tr>
-      <td title="${escapeHtml(report.run_id || "")}">${escapeHtml(shortRunId(report))}</td>
-      <td>${escapeHtml(report.document_type || "unknown")}</td>
-      <td>${formatScore(scores.f1)}</td>
-      <td>${summary.passed}</td>
-      <td>${summary.failed}</td>
-      <td>${summary.missing}</td>
-      <td>${escapeHtml(formatTimestamp(report.timestamp))}</td>
-      <td>${reportActionButton(reportName(report), "view")}</td>
-      <td>${reportActionButton(reportName(report), "delete")}</td>
-    </tr>
-  `;
-}
-
-function renderRecentReports() {
-  const reports = state.reports.slice(0, 5);
-  if (!reports.length) {
-    els.recentReportsBody.innerHTML = '<tr><td colspan="7" class="empty-row">No reports yet</td></tr>';
-    return;
-  }
-  els.recentReportsBody.innerHTML = reports
-    .map((report) => {
-      const scores = scoresFor(report);
-      const summary = summaryFor(report);
-      return `
-        <tr>
-          <td title="${escapeHtml(report.run_id || "")}">${escapeHtml(shortRunId(report))}</td>
-          <td>${escapeHtml(report.document_type || "unknown")}</td>
-          <td>${formatScore(scores.f1)}</td>
-          <td>${summary.passed}</td>
-          <td>${summary.failed}</td>
-          <td>${summary.missing}</td>
-          <td>${reportActionButtons(reportName(report))}</td>
-        </tr>
-      `;
-    })
-    .join("");
-}
-
-function filteredHistoryReports() {
-  const query = els.historySearch.value.trim().toLowerCase();
-  let reports = state.reports;
-  if (query) {
-    reports = reports.filter((report) => {
-      return [reportName(report), report.run_id, report.filename, report.document_type]
-        .some((value) => String(value || "").toLowerCase().includes(query));
-    });
-  }
-  if (state.sortByF1) {
-    reports = [...reports].sort((a, b) => {
-      const aScore = Number(scoresFor(a).f1 || 0);
-      const bScore = Number(scoresFor(b).f1 || 0);
-      return state.f1SortDirection === "desc" ? bScore - aScore : aScore - bScore;
-    });
-  }
-  return reports;
-}
-
-function renderHistory() {
-  const reports = filteredHistoryReports();
-  setText(els.reportCount, `${reports.length} report${reports.length === 1 ? "" : "s"}`);
-  const totalPages = Math.max(1, Math.ceil(reports.length / state.historyPageSize));
-  state.historyPage = Math.min(state.historyPage, totalPages);
-  setText(els.historyPageLabel, `Page ${state.historyPage} of ${totalPages}`);
-  els.historyPrev.disabled = state.historyPage <= 1;
-  els.historyNext.disabled = state.historyPage >= totalPages;
-  if (!reports.length) {
-    els.historyBody.innerHTML = '<tr><td colspan="9" class="empty-row">No reports found</td></tr>';
-    return;
-  }
-  const start = (state.historyPage - 1) * state.historyPageSize;
-  els.historyBody.innerHTML = reports.slice(start, start + state.historyPageSize).map(rowForReport).join("");
-}
-
-function renderSummary(summary) {
-  setText(els.totalRuns, summary.total_runs ?? 0);
-  setText(els.averageF1, formatScore(summary.average_f1));
-  setText(els.promptProblems, summary.total_prompt_problems ?? 0);
-  setText(els.ocrLimitations, summary.total_ocr_limitations ?? 0);
-}
-
-function renderLatest(report) {
-  if (!report) {
-    setText(els.latestReportLabel, "No report selected");
-    setText(els.latestPrecision, "-");
-    setText(els.latestRecall, "-");
-    setText(els.latestF1, "-");
-    setText(els.latestMissing, "-");
-    return;
-  }
-  const scores = scoresFor(report);
-  const summary = summaryFor(report);
-  setText(els.latestReportLabel, report.run_id || reportName(report));
-  setText(els.latestPrecision, formatScore(scores.precision));
-  setText(els.latestRecall, formatScore(scores.recall));
-  setText(els.latestF1, formatScore(scores.f1));
-  setText(els.latestMissing, summary.missing);
-}
-
-async function loadHealth() {
-  clearBanner(els.healthMessage);
-  setText(els.apiBaseUrl, window.location.origin);
-  try {
-    const health = await api.health();
-    els.topHealthDot.className = "health-dot ok";
-    els.topHealthText.textContent = "Backend connected";
-    els.dashboardHealthPill.textContent = "CONNECTED";
-    els.dashboardHealthPill.className = "status-pill completed";
-    setText(els.healthStatus, health.status || "ok");
-    setText(els.healthResultsPath, String(Boolean(health.results_configured)));
-    setText(els.healthOpenAi, String(Boolean(health.azure_openai_configured)));
-  } catch (error) {
-    els.topHealthDot.className = "health-dot fail";
-    els.topHealthText.textContent = "Backend unavailable";
-    els.dashboardHealthPill.textContent = "FAILED";
-    els.dashboardHealthPill.className = "status-pill failed";
-    setText(els.healthStatus, "Unavailable");
-    setBanner(els.healthMessage, error.message, "error");
-  }
-}
-
-async function loadSummary() {
-  clearBanner(els.dashboardError);
-  try {
-    renderSummary(await api.summary());
-  } catch (error) {
-    setBanner(els.dashboardError, error.message, "error");
-  }
-}
-
-async function loadReports() {
-  clearBanner(els.historyMessage);
-  try {
-    const payload = await api.reports();
-    state.reports = (payload.reports || []).sort((a, b) => reportRunTime(b) - reportRunTime(a));
-    state.reports.forEach((report) => state.reportCache.set(report.name, report));
-    state.latestReport = state.reports[0] || state.latestReport;
-    renderLatest(state.latestReport);
-    renderRecentReports();
-    renderHistory();
-  } catch (error) {
-    setBanner(els.historyMessage, error.message, "error");
-  }
-}
-
-async function refreshAll() {
-  await Promise.all([loadHealth(), loadSummary(), loadReports()]);
-}
-
-async function getReport(name) {
-  if (state.reportCache.has(name)) {
-    const cached = state.reportCache.get(name);
-    if (cached?.field_comparison || cached?.ocr_eval || cached?.llm_eval) return cached;
-  }
-  const report = await api.report(name);
-  report.name = name;
-  state.reportCache.set(name, report);
-  return report;
-}
-
-function setReportTab(tabName) {
-  els.reportTabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.reportTab === tabName));
-  els.reportPanels.forEach((panel) => panel.classList.toggle("active", panel.dataset.reportPanel === tabName));
-}
-
-function insight(icon, tone, text) {
-  return `<div class="insight-row tone-${tone}"><span class="ti ${icon} insight-icon tone-${tone}"></span><span>${escapeHtml(text)}</span></div>`;
+function insightRow(icon, tone, text) {
+  return `<div class="insight-row insight-row--${tone}"><span class="ti ${icon}"></span><span>${escapeHtml(text)}</span></div>`;
 }
 
 function generateInsights(report) {
   const scores = scoresFor(report);
   const fields = fieldsFor(report);
   const insights = [];
+  if (report.multiple_documents_warning) {
+    const documentCount = Number(report.document_count || 0);
+    insights.push({
+      icon: "ti-alert-triangle",
+      tone: "warning",
+      text: `This run contains ${documentCount} document objects. Only the first was evaluated. If this document has an original and amendment, results may reflect the original only.`,
+    });
+  }
   if (Number(scores.f1 || 0) >= 0.9) {
     insights.push({ icon: "ti-circle-check", tone: "success", text: "Extraction is performing well for these fields" });
   }
@@ -1084,42 +916,351 @@ function generateInsights(report) {
   return insights;
 }
 
-function severityForAction(action) {
-  const text = `${action.field || ""} ${action.action || ""}`.toLowerCase();
-  if (text.includes("prompt")) return { label: "Prompt fix needed", tone: "prompt", order: 0 };
-  if (text.includes("ocr")) return { label: "OCR limitation", tone: "ocr", order: 1 };
-  return { label: "Investigate", tone: "investigate", order: 2 };
+function renderResultInsights(report) {
+  els.resultInsights.innerHTML = generateInsights(report).map((item) => insightRow(item.icon, item.tone, item.text)).join("");
 }
 
-function renderActions(report) {
-  const actions = [...(report.recommended_actions || [])].sort((a, b) => severityForAction(a).order - severityForAction(b).order);
-  if (!actions.length) {
-    els.recommendedActions.innerHTML = '<div class="empty-inline">No recommended actions for this report.</div>';
+function setResultStatus(text, tone) {
+  els.resultStatusBadge.textContent = text;
+  els.resultStatusBadge.className = `badge badge--${tone}`;
+}
+
+function renderRunResult(report) {
+  const scores = scoresFor(report);
+  const summary = summaryFor(report);
+  setText(els.resultSubtitle, reportName(report) || "Evaluation completed");
+  setText(els.resultF1, formatScore(scores.f1));
+  setText(els.resultPassed, summary.passed);
+  setText(els.resultFailed, summary.failed);
+  setText(els.resultMissing, summary.missing);
+  setText(els.resultUncertain, summary.uncertain);
+  setText(els.resultPromptProblems, summary.promptProblems);
+  setText(els.resultOcrLimitations, summary.ocrLimitations);
+  renderResultInsights(report);
+  els.openReportButton.disabled = false;
+}
+
+async function runEvaluation(event) {
+  event.preventDefault();
+  clearBanner(els.runMessageBanner);
+  const { fields, entries, errors, warnings } = collectGoldenFields(true);
+  if (!els.runId.value.trim()) {
+    setBanner(els.runMessageBanner, "Enter a DocsAI Run ID before running evaluation.", "error");
     return;
   }
-  els.recommendedActions.innerHTML = actions
+  if (errors.length) {
+    setBanner(els.runMessageBanner, errors.join(" | "), "error");
+    return;
+  }
+  if (warnings.length) setBanner(els.runMessageBanner, warnings.join(" | "), "warning");
+  setResultStatus("RUNNING", "warning");
+  setButtonLoading(els.runButton, true, "Running evaluation...");
+  startProgressMessages();
+  try {
+    const runId = els.runId.value.trim();
+    const report = await api.runEvaluation({ run_id: runId, golden_fields: fields });
+    saveSessionFields(runId, entries);
+    rememberCurrentRun(report);
+    renderRunResult(report);
+    renderLatest(report);
+    setResultStatus("COMPLETE", "success");
+    if (!warnings.length) setBanner(els.runMessageBanner, "Evaluation completed successfully.", "success");
+    await Promise.all([loadSummary(), loadReports()]);
+    openReportModal(report);
+  } catch (error) {
+    setResultStatus("FAILED", "error");
+    setBanner(els.runMessageBanner, error.message, "error");
+  } finally {
+    stopProgressMessages();
+    setButtonLoading(els.runButton, false);
+    updateRunButtonState();
+  }
+}
+
+/* ---------- Dashboard ---------- */
+
+function reportActionButtons(name) {
+  const safeName = escapeHtml(name);
+  return `
+    <div class="row-actions">
+      <button class="icon-btn" type="button" data-action="view" data-report="${safeName}" title="View report" aria-label="View report">
+        <span class="ti ti-eye"></span>
+      </button>
+      <button class="text-btn text-btn--danger" type="button" data-action="delete" data-report="${safeName}">del</button>
+    </div>
+  `;
+}
+
+function renderRecentReports() {
+  const reports = state.reports.slice(0, 5);
+  if (!reports.length) {
+    els.recentReportsBody.innerHTML = '<tr><td colspan="7" class="empty-row">No reports yet</td></tr>';
+    return;
+  }
+  els.recentReportsBody.innerHTML = reports
+    .map((report) => {
+      const scores = scoresFor(report);
+      const summary = summaryFor(report);
+      return `
+        <tr>
+          <td title="${escapeHtml(report.run_id || "")}">${escapeHtml(shortRunId(report))}</td>
+          <td>${escapeHtml(report.document_type || "unknown")}</td>
+          <td class="${f1ScoreClass(scores.f1)}">${formatScore(scores.f1)}</td>
+          <td class="value-passed">${summary.passed}</td>
+          <td class="value-failed">${summary.failed}</td>
+          <td class="value-missing">${summary.missing}</td>
+          <td>${reportActionButtons(reportName(report))}</td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
+function renderLatest(report) {
+  if (!report) {
+    setText(els.latestRunLabel, "No report selected");
+    setText(els.latestPrecision, "-");
+    setText(els.latestRecall, "-");
+    setText(els.latestF1, "-");
+    setText(els.latestMissing, "-");
+    return;
+  }
+  const scores = scoresFor(report);
+  const summary = summaryFor(report);
+  setText(els.latestRunLabel, report.run_id || reportName(report));
+  setText(els.latestPrecision, formatScore(scores.precision));
+  setText(els.latestRecall, formatScore(scores.recall));
+  setText(els.latestF1, formatScore(scores.f1));
+  setText(els.latestMissing, summary.missing);
+}
+
+async function loadHealth() {
+  clearBanner(els.healthBanner);
+  setText(els.healthApiBase, window.location.origin);
+  try {
+    const health = await api.health();
+    els.healthStatusDot.className = "status-dot status-dot--ok";
+    setText(els.healthStatusText, "ok");
+    els.dashboardHealthBadge.textContent = "CONNECTED";
+    els.dashboardHealthBadge.className = "badge badge--success";
+    els.runStatusBadge.textContent = "READY";
+    els.runStatusBadge.className = "badge badge--success";
+    setText(els.healthResultsPath, String(Boolean(health.results_configured)));
+    setText(els.healthAzureOpenai, String(Boolean(health.azure_openai_configured)));
+  } catch (error) {
+    els.healthStatusDot.className = "status-dot status-dot--error";
+    setText(els.healthStatusText, "error");
+    els.dashboardHealthBadge.textContent = "FAILED";
+    els.dashboardHealthBadge.className = "badge badge--error";
+    els.runStatusBadge.textContent = "DISCONNECTED";
+    els.runStatusBadge.className = "badge badge--error";
+    setBanner(els.healthBanner, error.message, "error");
+  }
+}
+
+async function loadSummary() {
+  clearBanner(els.dashboardError);
+  try {
+    const summary = await api.summary();
+    setText(els.statTotalRuns, summary.total_runs ?? 0);
+    setText(els.statAverageF1, formatScore(summary.average_f1));
+    setText(els.statPromptProblems, summary.total_prompt_problems ?? 0);
+    setText(els.statOcrLimitations, summary.total_ocr_limitations ?? 0);
+  } catch (error) {
+    setBanner(els.dashboardError, error.message, "error");
+  }
+}
+
+async function loadReports() {
+  clearBanner(els.historyBanner);
+  try {
+    const payload = await api.reports();
+    state.reports = (payload.reports || []).sort((a, b) => reportRunTime(b) - reportRunTime(a));
+    state.reports.forEach((report) => state.reportCache.set(report.name, report));
+    state.latestReport = state.reports[0] || state.latestReport;
+    renderLatest(state.latestReport);
+    renderRecentReports();
+    renderHistory();
+  } catch (error) {
+    setBanner(els.historyBanner, error.message, "error");
+  }
+}
+
+async function refreshAll() {
+  await Promise.all([loadHealth(), loadSummary(), loadReports()]);
+}
+
+async function getReport(name) {
+  if (state.reportCache.has(name)) {
+    const cached = state.reportCache.get(name);
+    if (cached?.field_comparison || cached?.ocr_eval || cached?.llm_eval) return cached;
+  }
+  const report = await api.report(name);
+  report.name = name;
+  state.reportCache.set(name, report);
+  return report;
+}
+
+/* ---------- History ---------- */
+
+function rowForReport(report) {
+  const scores = scoresFor(report);
+  const summary = summaryFor(report);
+  return `
+    <tr>
+      <td title="${escapeHtml(report.run_id || "")}">${escapeHtml(shortRunId(report))}</td>
+      <td>${escapeHtml(report.document_type || "unknown")}</td>
+      <td class="${f1ScoreClass(scores.f1)}">${formatScore(scores.f1)}</td>
+      <td class="value-passed">${summary.passed}</td>
+      <td class="value-failed">${summary.failed}</td>
+      <td class="value-missing">${summary.missing}</td>
+      <td>${escapeHtml(formatTimestamp(report.timestamp))}</td>
+      <td>
+        <button class="icon-btn" type="button" data-action="view" data-report="${escapeHtml(reportName(report))}" title="View report" aria-label="View report">
+          <span class="ti ti-eye"></span>
+        </button>
+      </td>
+      <td>
+        <button class="text-btn text-btn--danger" type="button" data-action="delete" data-report="${escapeHtml(reportName(report))}">del</button>
+      </td>
+    </tr>
+  `;
+}
+
+function filteredHistoryReports() {
+  const query = els.historySearch.value.trim().toLowerCase();
+  let reports = state.reports;
+  if (query) {
+    reports = reports.filter((report) => {
+      return [reportName(report), report.run_id, report.filename, report.document_type]
+        .some((value) => String(value || "").toLowerCase().includes(query));
+    });
+  }
+  if (state.sortByF1) {
+    reports = [...reports].sort((a, b) => {
+      const aScore = Number(scoresFor(a).f1 || 0);
+      const bScore = Number(scoresFor(b).f1 || 0);
+      return state.f1SortDirection === "desc" ? bScore - aScore : aScore - bScore;
+    });
+  }
+  return reports;
+}
+
+function renderHistory() {
+  const reports = filteredHistoryReports();
+  setText(els.historyCount, `${reports.length} report${reports.length === 1 ? "" : "s"}`);
+  const totalPages = Math.max(1, Math.ceil(reports.length / state.historyPageSize));
+  state.historyPage = Math.min(state.historyPage, totalPages);
+  setText(els.historyPageLabel, `Page ${state.historyPage} of ${totalPages}`);
+  els.historyPrev.disabled = state.historyPage <= 1;
+  els.historyNext.disabled = state.historyPage >= totalPages;
+  if (!reports.length) {
+    els.historyBody.innerHTML = '<tr><td colspan="9" class="empty-row">No reports found</td></tr>';
+    return;
+  }
+  const start = (state.historyPage - 1) * state.historyPageSize;
+  els.historyBody.innerHTML = reports.slice(start, start + state.historyPageSize).map(rowForReport).join("");
+}
+
+async function handleReportAction(event) {
+  const button = event.target.closest("[data-action][data-report]");
+  if (!button) return;
+  const name = button.dataset.report;
+  if (button.dataset.action === "delete") {
+    if (!window.confirm(`Delete report ${name}?`)) return;
+    try {
+      await api.deleteReport(name);
+      state.reportCache.delete(name);
+      showToast("Report deleted");
+      await Promise.all([loadReports(), loadSummary()]);
+    } catch (error) {
+      setBanner(els.historyBanner, error.message, "error");
+      showToast(error.message);
+    }
+    return;
+  }
+  getReport(name)
+    .then((report) => {
+      state.latestReport = report;
+      renderLatest(report);
+      openReportModal(report);
+    })
+    .catch((error) => {
+      setBanner(els.historyBanner, error.message, "error");
+      showToast(error.message);
+    });
+}
+
+function wireHistory() {
+  els.historySearch.addEventListener("input", () => {
+    state.historyPage = 1;
+    renderHistory();
+  });
+  els.sortF1Button.addEventListener("click", () => {
+    if (!state.sortByF1) {
+      state.sortByF1 = true;
+      state.f1SortDirection = "desc";
+    } else {
+      state.f1SortDirection = state.f1SortDirection === "asc" ? "desc" : "asc";
+    }
+    els.sortF1Indicator.textContent = state.f1SortDirection === "desc" ? "↓" : "↑";
+    state.historyPage = 1;
+    renderHistory();
+  });
+  els.historyPrev.addEventListener("click", () => {
+    state.historyPage = Math.max(1, state.historyPage - 1);
+    renderHistory();
+  });
+  els.historyNext.addEventListener("click", () => {
+    state.historyPage += 1;
+    renderHistory();
+  });
+  els.refreshReportsButton.addEventListener("click", async () => {
+    setButtonLoading(els.refreshReportsButton, true, "Refreshing...");
+    await Promise.all([loadReports(), loadSummary()]);
+    setButtonLoading(els.refreshReportsButton, false);
+  });
+  els.historyBody.addEventListener("click", handleReportAction);
+  els.recentReportsBody.addEventListener("click", handleReportAction);
+}
+
+/* ---------- Report modal ---------- */
+
+function setModalTab(tabName) {
+  els.tabs.forEach((tab) => tab.classList.toggle("tab--active", tab.dataset.tab === tabName));
+  els.tabPanels.forEach((panel) => panel.classList.toggle("tab-panel--active", panel.dataset.panel === tabName));
+}
+
+function severityForAction(action) {
+  const text = `${action.field || ""} ${action.action || ""}`.toLowerCase();
+  if (text.includes("prompt")) return { label: "PROMPT FIX", badgeClass: "badge--prompt-fix", order: 0 };
+  if (text.includes("ocr")) return { label: "OCR LIMIT", badgeClass: "badge--ocr-limit", order: 1 };
+  return { label: "INVESTIGATE", badgeClass: "badge--warning", order: 2 };
+}
+
+function renderModalActions(report) {
+  const actions = [...(report.recommended_actions || [])].sort((a, b) => severityForAction(a).order - severityForAction(b).order);
+  if (!actions.length) {
+    els.modalActions.innerHTML = '<div class="empty-inline">No recommended actions for this report.</div>';
+    return;
+  }
+  els.modalActions.innerHTML = actions
     .map((action) => {
       const severity = severityForAction(action);
       return `
         <article class="action-card">
-          <div><strong>${escapeHtml(action.field)}</strong><span class="severity-badge ${severity.tone}">${escapeHtml(severity.label)}</span></div>
-          <p>${escapeHtml(action.action)}</p>
+          <div>
+            <div class="action-card__field">${escapeHtml(action.field)}</div>
+            <p class="action-card__text">${escapeHtml(action.action)}</p>
+          </div>
+          <span class="badge ${severity.badgeClass}">${escapeHtml(severity.label)}</span>
         </article>
       `;
     })
     .join("");
 }
 
-function fieldGroup(status) {
-  const normalized = String(status || "").toUpperCase();
-  if (normalized === "TP") return "passed";
-  if (["FP", "EXTRA", "PARTIAL"].includes(normalized)) return "failed";
-  if (normalized === "FN") return "missing";
-  if (["GREY", "GREY_UNRESOLVED", "EXTRA_INFO"].includes(normalized)) return "uncertain";
-  return "uncertain";
-}
-
-function renderFieldFilters(fields) {
+function renderModalFieldFilters(fields) {
   const entries = Object.values(fields);
   const counts = {
     all: entries.length,
@@ -1138,9 +1279,10 @@ function renderFieldFilters(fields) {
     ["missing", "Missing"],
     ["uncertain", "Uncertain"],
   ];
-  els.fieldFilters.innerHTML = labels
+  els.modalFieldFilters.innerHTML = labels
     .map(([key, label]) => {
-      return `<button class="line-filter-tab ${state.activeFieldFilter === key ? "active" : ""}" type="button" data-field-filter="${key}">${label} <span>${counts[key]}</span></button>`;
+      const activeClass = state.activeFieldFilter === key ? "filter-chip--active" : "";
+      return `<button class="filter-chip ${activeClass}" type="button" data-field-filter="${key}">${label} (${counts[key]})</button>`;
     })
     .join("");
 }
@@ -1151,20 +1293,32 @@ function formatFieldScore(result) {
   return `${Number(result.score || 0).toFixed(1)}%`;
 }
 
-function renderOcrSearch(result) {
+function ocrActionHint(verdict) {
+  if (verdict === "PROMPT_PROBLEM") {
+    return '<div class="ocr-action-hint ocr-action-hint--prompt">Tune the extraction prompt for this field</div>';
+  }
+  if (verdict === "OCR_LIMITATION") {
+    return "<div class=\"ocr-action-hint ocr-action-hint--ocr\">OCR did not capture this. Prompt tuning won't fix it.</div>";
+  }
+  return "";
+}
+
+function renderOcrAccordion(result) {
   const search = result.ocr_search;
   if (!search) return "";
-  const verdictClass = String(search.verdict || "UNCERTAIN").toLowerCase();
+  const verdict = String(search.verdict || "UNCERTAIN").toUpperCase();
+  const verdictClass = verdict.toLowerCase();
+  const badgeClass = verdict === "PROMPT_PROBLEM" ? "badge--warning" : verdict === "OCR_LIMITATION" ? "badge--error" : "badge--muted";
+  const verdictLabel = verdict === "UNCERTAIN" ? "UNCERTAIN — needs manual review" : verdict.replaceAll("_", " ");
   return `
-    <details class="ocr-search ${verdictClass}">
+    <details class="ocr-accordion ocr-accordion--${verdictClass}">
       <summary>
-        <span class="status-pill ${verdictClass === "prompt_problem" ? "missing" : verdictClass === "ocr_limitation" ? "failed" : "unresolved"}">
-          ${escapeHtml(String(search.verdict || "UNCERTAIN").replaceAll("_", " "))}
-        </span>
+        <span class="badge ${badgeClass}">${escapeHtml(verdictLabel)}</span>
         OCR diagnosis
       </summary>
       <p>${escapeHtml(search.reason || "-")}</p>
-      <small>${Number(search.occurrence_count || 0)} occurrence(s) found in OCR</small>
+      <small>Found ${Number(search.occurrence_count || 0)} times in OCR markdown</small>
+      ${ocrActionHint(verdict)}
     </details>
   `;
 }
@@ -1184,6 +1338,12 @@ function lineItemCellClass(status) {
   return "cell-fp";
 }
 
+function rowStatusBadgeClass(rowStatus) {
+  if (rowStatus === "PASS") return "success";
+  if (rowStatus === "PARTIAL") return "warning";
+  return "error";
+}
+
 function renderLineItemsField(field, result) {
   const lineItems = result.line_items || {};
   const columns = lineItemColumns(result);
@@ -1191,11 +1351,11 @@ function renderLineItemsField(field, result) {
   const passedRows = rowResults.filter((row) => row.row_status === "PASS").length;
   const totalRows = Number(lineItems.total_golden_rows ?? rowResults.length);
   return `
-    <article class="field-detail-row line-items-field ${statusClass(result.status)}">
+    <article class="field-detail-row field-detail-row--${fieldRowModifier(result.status)} line-items-field">
       <details>
         <summary>
-          <strong>${escapeHtml(field)} - ${passedRows}/${totalRows} rows passed</strong>
-          ${statusPill(result.status)}
+          <strong>${escapeHtml(field)} — ${passedRows}/${totalRows} rows matched</strong>
+          ${statusBadge(result.status)}
         </summary>
         <div class="line-items-result-wrap">
           <table class="line-items-result-table">
@@ -1210,8 +1370,8 @@ function renderLineItemsField(field, result) {
               ${
                 rowResults.length
                   ? rowResults
-                      .map((row, index) => {
-                        return `
+                      .map(
+                        (row, index) => `
                           <tr>
                             <td>${index + 1}</td>
                             ${columns
@@ -1225,10 +1385,10 @@ function renderLineItemsField(field, result) {
                                 `;
                               })
                               .join("")}
-                            <td><span class="row-status-badge ${String(row.row_status || "FAIL").toLowerCase()}">${escapeHtml(row.row_status || "FAIL")}</span></td>
+                            <td><span class="badge badge--${rowStatusBadgeClass(row.row_status)}">${escapeHtml(row.row_status || "FAIL")}</span></td>
                           </tr>
-                        `;
-                      })
+                        `,
+                      )
                       .join("")
                   : `<tr><td colspan="${columns.length + 2}" class="empty-row">No matched rows</td></tr>`
               }
@@ -1247,42 +1407,42 @@ function renderLineItemsField(field, result) {
               : ""
           }
         </div>
-        ${renderOcrSearch(result)}
+        ${renderOcrAccordion(result)}
       </details>
     </article>
   `;
 }
 
-function renderFieldDetails(fields) {
-  const order = { FN: 0, FP: 1, EXTRA: 1, PARTIAL: 1, GREY: 2, GREY_UNRESOLVED: 2, EXTRA_INFO: 2, TP: 3 };
+function renderModalFieldDetails(fields) {
+  const order = { FN: 0, FP: 1, EXTRA: 1, PARTIAL: 1, GREY: 2, GREY_UNRESOLVED: 2, EXTRA_INFO: 2, PRESENT: 2, ABSENT: 2, TP: 3 };
   const rows = Object.entries(fields)
     .filter(([, result]) => state.activeFieldFilter === "all" || fieldGroup(result?.status) === state.activeFieldFilter)
     .sort((a, b) => (order[a[1]?.status] ?? 4) - (order[b[1]?.status] ?? 4) || a[0].localeCompare(b[0]));
   if (!rows.length) {
-    els.fieldDetailsList.innerHTML = '<div class="empty-inline">No fields match this filter.</div>';
+    els.modalFieldDetails.innerHTML = '<div class="empty-inline">No fields match this filter.</div>';
     return;
   }
-  els.fieldDetailsList.innerHTML = rows
+  els.modalFieldDetails.innerHTML = rows
     .map(([field, result]) => {
       if (result.field_type === "line_items" || result.line_items) {
         return renderLineItemsField(field, result);
       }
       const judge = result.llm_judge
-        ? `<span class="small-tag">LLM resolved: ${escapeHtml(result.llm_judge.verdict || "-")}</span>`
+        ? `<span class="llm-chip">LLM resolved: ${escapeHtml(result.llm_judge.verdict || "-")}</span>`
         : "";
       return `
-        <article class="field-detail-row ${statusClass(result.status)}">
-          <div class="field-name-cell"><strong>${escapeHtml(field)}</strong></div>
+        <article class="field-detail-row field-detail-row--${fieldRowModifier(result.status)}">
+          <div class="field-name-cell">${escapeHtml(field)}</div>
           <div class="value-pair">
             <div><span>Expected</span><p>${escapeHtml(result.golden_value)}</p></div>
             <div><span>Extracted</span><p>${escapeHtml(result.extracted_value)}</p></div>
           </div>
           <div class="field-badges">
             <span class="score-badge">${escapeHtml(formatFieldScore(result))}</span>
-            ${statusPill(result.status)}
+            ${statusBadge(result.status)}
             ${judge}
           </div>
-          ${renderOcrSearch(result)}
+          ${renderOcrAccordion(result)}
         </article>
       `;
     })
@@ -1293,34 +1453,41 @@ function openReportModal(report) {
   state.activeModalReport = report;
   state.activeFieldFilter = "all";
   const scores = scoresFor(report);
-  const summary = summaryFor(report);
   const fields = fieldsFor(report);
 
-  setText(els.modalTitle, reportName(report) || "Evaluation Report");
-  setText(els.modalSubtitle, `${report.run_id || report.filename || "-"} | ${formatTimestamp(report.timestamp)}`);
-  setText(els.modalRunId, report.run_id || "-");
-  setText(els.modalDocumentType, report.document_type || "unknown");
-  setText(els.modalTimestamp, formatTimestamp(report.timestamp));
+  setText(els.modalFilename, reportName(report) || "report.json");
+  setText(els.modalTitle, "View report");
+  setText(els.modalRunId, shortRunId(report));
+  els.modalRunId.title = report.run_id || "";
+  setText(els.modalDocType, report.document_type || "unknown");
   setText(els.modalF1, formatScore(scores.f1));
-  setText(els.summaryF1, formatScore(scores.f1));
-  setText(els.summaryPassed, summary.passed);
-  setText(els.summaryFailed, Number(summary.failed) + Number(summary.missing));
-  setText(els.summaryMissing, summary.missing);
+  setText(els.modalPrecision, formatScore(scores.precision));
+  setText(els.modalRecall, formatScore(scores.recall));
 
-  const legacy = isLegacyReport(report);
-  els.legacyReportNote.hidden = !legacy;
-  els.legacyOcrData.hidden = !legacy;
+  const format = reportFormat(report);
+  const legacy = format === "legacy";
+  const unknown = format === "unknown";
   if (legacy) {
-    els.legacyReportNote.textContent = "This report uses the old format. OCR eval data shown below.";
-    els.legacyOcrData.textContent = JSON.stringify(report.ocr_eval || {}, null, 2);
+    setBanner(els.modalLegacyNote, "This is an older report format.", "warning");
+  } else if (unknown) {
+    setBanner(els.modalLegacyNote, "Unknown report format.", "warning");
+  } else {
+    clearBanner(els.modalLegacyNote);
   }
+  els.modalLegacyData.classList.toggle("hidden", !legacy);
+  els.modalLegacyData.innerHTML = legacy
+    ? `
+      <pre class="legacy-data">OCR eval:\n${escapeHtml(JSON.stringify(report.ocr_eval || {}, null, 2))}</pre>
+      <pre class="legacy-data">LLM eval:\n${escapeHtml(JSON.stringify(report.llm_eval || {}, null, 2))}</pre>
+    `
+    : "";
 
-  els.insightList.innerHTML = generateInsights(report).map((item) => insight(item.icon, item.tone, item.text)).join("");
-  renderActions(report);
-  renderFieldFilters(fields);
-  renderFieldDetails(fields);
-  setReportTab("summary");
-  els.reportModal.hidden = false;
+  els.modalInsights.innerHTML = generateInsights(report).map((item) => insightRow(item.icon, item.tone, item.text)).join("");
+  renderModalActions(report);
+  renderModalFieldFilters(fields);
+  renderModalFieldDetails(fields);
+  setModalTab("summary");
+  els.reportModal.classList.remove("hidden");
 }
 
 function downloadReport(report) {
@@ -1336,64 +1503,39 @@ function downloadReport(report) {
   URL.revokeObjectURL(url);
 }
 
-async function handleReportAction(event) {
-  const button = event.target.closest("[data-action][data-report]");
-  if (!button) return;
-  const name = button.dataset.report;
-  if (button.dataset.action === "delete") {
-    if (!window.confirm(`Delete report ${name}?`)) return;
-    try {
-      await api.deleteReport(name);
-      state.reportCache.delete(name);
-      showToast("Report deleted");
-      await Promise.all([loadReports(), loadSummary()]);
-    } catch (error) {
-      setBanner(els.historyMessage, error.message, "error");
-      showToast(error.message);
-    }
-    return;
-  }
-  getReport(name)
-    .then((report) => {
-      state.latestReport = report;
-      renderLatest(report);
-      openReportModal(report);
-    })
-    .catch((error) => {
-      setBanner(els.historyMessage, error.message, "error");
-      showToast(error.message);
-    });
+function wireReportModal() {
+  els.tabs.forEach((tab) => tab.addEventListener("click", () => setModalTab(tab.dataset.tab)));
+  els.modalFieldFilters.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-field-filter]");
+    if (!button || !state.activeModalReport) return;
+    state.activeFieldFilter = button.dataset.fieldFilter;
+    renderModalFieldFilters(fieldsFor(state.activeModalReport));
+    renderModalFieldDetails(fieldsFor(state.activeModalReport));
+  });
+  els.modalDownloadButton.addEventListener("click", () => {
+    if (state.activeModalReport) downloadReport(state.activeModalReport);
+  });
+  els.modalCloseButton.addEventListener("click", () => {
+    els.reportModal.classList.add("hidden");
+  });
+  els.reportModal.addEventListener("click", (event) => {
+    if (event.target === els.reportModal) els.reportModal.classList.add("hidden");
+  });
 }
 
-function wireNavigation() {
-  els.navItems.forEach((button) => {
-    button.addEventListener("click", () => showSection(button.dataset.section));
-  });
-  $$("[data-section-jump]").forEach((button) => {
-    button.addEventListener("click", () => showSection(button.dataset.sectionJump));
-  });
-}
+/* ---------- Wiring ---------- */
 
 function wireEvaluationForm() {
-  addSimpleFieldRow();
+  createFieldRow("simple");
+  wireAddFieldChips();
   els.loadFieldsButton.addEventListener("click", loadRunFields);
-  els.addFieldButton.addEventListener("click", () => {
-    addSimpleFieldRow();
-    els.fieldTypePicker.hidden = !els.fieldTypePicker.hidden;
-  });
-  els.fieldTypePicker.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-entry-type]");
-    if (!button) return;
-    addEntryByType(button.dataset.entryType);
-    els.fieldTypePicker.hidden = true;
-  });
   els.evalForm.addEventListener("submit", runEvaluation);
   els.extractedFieldPills.addEventListener("click", (event) => {
     const tableButton = event.target.closest("[data-table-hint]");
     if (tableButton) {
       const fieldName = tableButton.dataset.tableHint;
       const meta = state.fieldMetadata[fieldName] || {};
-      addLineItemsTable({ fieldName, columns: meta.field_schema || [], rows: [] });
+      createTableBlock({ fieldName, columns: meta.field_schema || [], rows: [] });
       return;
     }
     const pill = event.target.closest("[data-field]");
@@ -1403,18 +1545,18 @@ function wireEvaluationForm() {
   els.runId.addEventListener("input", () => {
     const hasEntries = entryNodes().some((entry) => entryHasContent(entry));
     if (!els.runId.value.trim() && hasEntries) {
-      setBanner(els.runFieldsMessage, "Clearing run ID will keep your field entries. Change the run ID to re-run with new data.", "error");
+      setBanner(els.runFieldsBanner, "Clearing run ID will keep your field entries. Change the run ID to re-run with new data.", "error");
     } else {
-      clearBanner(els.runFieldsMessage);
+      clearBanner(els.runFieldsBanner);
     }
     maybeOfferRestore();
     updateRunButtonState();
   });
   els.restoreYes.addEventListener("click", restoreSessionFields);
   els.restoreNo.addEventListener("click", () => {
-    els.restorePrompt.hidden = true;
+    els.restorePrompt.classList.add("hidden");
   });
-  els.openLatestReport.addEventListener("click", async () => {
+  els.openReportButton.addEventListener("click", async () => {
     if (!state.currentRunReport) return;
     const name = reportName(state.currentRunReport);
     const fullReport = name ? await getReport(name).catch(() => state.currentRunReport) : state.currentRunReport;
@@ -1422,65 +1564,17 @@ function wireEvaluationForm() {
   });
 }
 
-function wireHistory() {
-  els.historySearch.addEventListener("input", () => {
-    state.historyPage = 1;
-    renderHistory();
-  });
-  els.sortF1.addEventListener("click", () => {
-    if (!state.sortByF1) {
-      state.sortByF1 = true;
-      state.f1SortDirection = "desc";
-    } else {
-      state.f1SortDirection = state.f1SortDirection === "asc" ? "desc" : "asc";
-    }
-    els.sortF1Indicator.textContent = state.f1SortDirection === "desc" ? "down" : "up";
-    state.historyPage = 1;
-    renderHistory();
-  });
-  els.historyPrev.addEventListener("click", () => {
-    state.historyPage = Math.max(1, state.historyPage - 1);
-    renderHistory();
-  });
-  els.historyNext.addEventListener("click", () => {
-    state.historyPage += 1;
-    renderHistory();
-  });
-  els.refreshReports.addEventListener("click", async () => {
-    setButtonLoading(els.refreshReports, true, "Refreshing...");
-    await Promise.all([loadReports(), loadSummary()]);
-    setButtonLoading(els.refreshReports, false);
-  });
-  els.historyBody.addEventListener("click", handleReportAction);
-  els.recentReportsBody.addEventListener("click", handleReportAction);
-}
-
-function wireModalAndHealth() {
-  els.reportTabs.forEach((tab) => tab.addEventListener("click", () => setReportTab(tab.dataset.reportTab)));
-  els.fieldFilters.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-field-filter]");
-    if (!button || !state.activeModalReport) return;
-    state.activeFieldFilter = button.dataset.fieldFilter;
-    renderFieldFilters(fieldsFor(state.activeModalReport));
-    renderFieldDetails(fieldsFor(state.activeModalReport));
-  });
-  els.downloadSummaryReport.addEventListener("click", () => {
-    if (state.activeModalReport) downloadReport(state.activeModalReport);
-  });
-  els.closeModal.addEventListener("click", () => {
-    els.reportModal.hidden = true;
-  });
-  els.reportModal.addEventListener("click", (event) => {
-    if (event.target === els.reportModal) els.reportModal.hidden = true;
-  });
-  els.refreshHealth.addEventListener("click", loadHealth);
+function wireSettings() {
+  els.refreshHealthButton.addEventListener("click", loadHealth);
 }
 
 function init() {
   wireNavigation();
   wireEvaluationForm();
   wireHistory();
-  wireModalAndHealth();
+  wireReportModal();
+  wireSettings();
+  restoreActivePage();
   refreshAll();
 }
 

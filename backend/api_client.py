@@ -273,15 +273,22 @@ def _extract_markdown_from_step(step: dict[str, Any], run_id: str) -> str:
     return markdown
 
 
-def _find_llm_output(steps: list[Any]) -> dict[str, Any] | None:
+def _find_llm_output(steps: list[Any]) -> tuple[dict[str, Any] | None, str, str | None]:
     """Find the LLM extraction step output while avoiding classification steps.
 
-    Priority 1: nested extraction.extractedFields structure.
-    Priority 2: extract step with flat document list, excluding classification metadata.
-    Priority 3: extract-fields step fallback with usable document data.
+    Priority 1: nested extraction.extractedFields structure (confidence: exact).
+    Priority 2: extract step with flat document list, excluding classification
+        metadata (confidence: heuristic).
+    Priority 3: extract-fields step fallback with usable document data
+        (confidence: heuristic).
+
+    Returns a (llm_output, extraction_step_confidence, extraction_step_id) tuple.
+    extraction_step_confidence is one of "exact", "heuristic", "not_found".
     """
     priority2: dict[str, Any] | None = None
+    priority2_step_id: str | None = None
     priority3: dict[str, Any] | None = None
+    priority3_step_id: str | None = None
 
     for step in steps:
         if not isinstance(step, dict) or step.get("stepType") != "call_llm":
@@ -292,21 +299,28 @@ def _find_llm_output(steps: list[Any]) -> dict[str, Any] | None:
         if not llm_response:
             continue
 
-        if _has_nested_extraction_fields(llm_response):
-            return llm_response
+        raw_step_id = str(step.get("stepId", ""))
+        step_id = raw_step_id.lower()
 
-        step_id = str(step.get("stepId", "")).lower()
+        if _has_nested_extraction_fields(llm_response):
+            return llm_response, "exact", raw_step_id
+
         if "extract" in step_id and priority2 is None and _contains_extraction_document_key(llm_response):
             priority2 = llm_response
+            priority2_step_id = raw_step_id
         if "extract-fields" in step_id and priority3 is None and _contains_extraction_document_key(llm_response):
             priority3 = llm_response
+            priority3_step_id = raw_step_id
 
-    selected_output = priority2 or priority3
-    if selected_output is not None:
-        return selected_output
+    if priority2 is not None:
+        logger.warning("LLM extraction step found via heuristic matching: %s", priority2_step_id)
+        return priority2, "heuristic", priority2_step_id
+    if priority3 is not None:
+        logger.warning("LLM extraction step found via heuristic matching: %s", priority3_step_id)
+        return priority3, "heuristic", priority3_step_id
 
     logger.warning("LLM extraction step not found; continuing without llm_output.")
-    return None
+    return None, "not_found", None
 
 
 def _fetch_run_steps_payload(run_id: str) -> list[Any]:
@@ -360,9 +374,15 @@ def get_run_steps(run_id: str) -> dict[str, Any]:
 
     ocr_step = _find_ocr_step(steps, run_id)
     ocr_markdown = _extract_markdown_from_step(ocr_step, run_id)
-    llm_output = _find_llm_output(steps)
+    llm_output, extraction_step_confidence, extraction_step_id = _find_llm_output(steps)
 
-    return {"ocr_markdown": ocr_markdown, "llm_output": llm_output, "run_id": run_id}
+    return {
+        "ocr_markdown": ocr_markdown,
+        "llm_output": llm_output,
+        "run_id": run_id,
+        "extraction_step_confidence": extraction_step_confidence,
+        "extraction_step_id": extraction_step_id,
+    }
 
 
 def get_run_steps_debug(
@@ -377,7 +397,7 @@ def get_run_steps_debug(
     ]
     ocr_step = _find_ocr_step(steps, run_id)
     ocr_markdown = _extract_markdown_from_step(ocr_step, run_id)
-    llm_output = _find_llm_output(steps)
+    llm_output, extraction_step_confidence, extraction_step_id = _find_llm_output(steps)
     detected_key = _detected_document_key(llm_output)
 
     result: dict[str, Any] = {
@@ -391,6 +411,8 @@ def get_run_steps_debug(
         "llm_step_found": llm_output is not None,
         "llm_json_found": bool(detected_key),
         "detected_document_key": detected_key or None,
+        "extraction_step_confidence": extraction_step_confidence,
+        "extraction_step_id": extraction_step_id,
     }
     if include_markdown_preview:
         result["ocr_markdown_preview"] = clean_ocr_markdown(ocr_markdown)[:500]

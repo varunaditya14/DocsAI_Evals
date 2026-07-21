@@ -27,6 +27,10 @@ from backend.report import save_report
 
 logger = logging.getLogger(__name__)
 
+DATA_GOLDEN_DATASETS_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "data", "golden_datasets")
+)
+
 
 class EvalRequest(BaseModel):
     """Request body for starting a UI-driven field evaluation."""
@@ -42,12 +46,13 @@ tags_metadata = [
 ]
 
 app = FastAPI(title="DocsAI Evals API", openapi_tags=tags_metadata)
+# Widen for staging/production deployment as needed
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
@@ -68,6 +73,7 @@ def on_startup() -> None:
     results_path = os.getenv("RESULTS_PATH")
     if results_path:
         os.makedirs(results_path, exist_ok=True)
+    os.makedirs(DATA_GOLDEN_DATASETS_DIR, exist_ok=True)
     try:
         settings = get_settings()
         if not settings.azure_openai_configured:
@@ -147,8 +153,8 @@ def _detect_document_type(llm_output: dict[str, Any] | None) -> str:
     return "unknown"
 
 
-def _multiple_document_warning(llm_output: Any) -> str | None:
-    """Return a warning when extraction output contains multiple document objects."""
+def _multiple_document_info(llm_output: Any) -> tuple[str | None, int]:
+    """Return a short warning and the document count when extraction output has multiple document objects."""
     output = normalize_keys_to_camel(llm_output) if isinstance(llm_output, dict) else {}
     extracted_data = output.get("extractedData")
     if isinstance(extracted_data, dict):
@@ -171,10 +177,16 @@ def _multiple_document_warning(llm_output: Any) -> str | None:
                 continue
             if isinstance(value, list) and len(value) > 1 and all(isinstance(item, dict) for item in value):
                 logger.warning("Multiple document objects found for %s; using first object only.", key)
-                return "Multiple document objects found. Evaluated first object only."
+                return "Multiple document objects found. Evaluated first object only.", len(value)
             if isinstance(value, dict):
                 stack.append(value)
-    return None
+    return None, 0
+
+
+MULTIPLE_DOCUMENTS_RUN_WARNING = (
+    "Multiple document objects found in this run. Evaluated first object only. "
+    "Run may contain an original and amended version."
+)
 
 
 def _is_scalar_row_table(value: Any) -> bool:
@@ -213,8 +225,30 @@ def _merge_extracted_fields(llm_output: Any, document_type: str) -> dict[str, An
     return {**extracted_fields, **table_fields}
 
 
-def _extract_fields_from_run(run_data: dict[str, Any]) -> tuple[str, dict[str, Any], str | None]:
-    """Return document type, extracted fields, and optional multi-object warning."""
+def _extraction_step_warning(run_data: dict[str, Any]) -> str | None:
+    """Return a warning message when the extraction step was found via heuristic matching."""
+    if run_data.get("extraction_step_confidence") != "heuristic":
+        return None
+    step_id = run_data.get("extraction_step_id") or "unknown"
+    return (
+        "Extraction step was found via heuristic matching. Results may be "
+        f"inaccurate if the wrong step was used. Step used: {step_id}"
+    )
+
+
+def _extract_fields_from_run(
+    run_data: dict[str, Any],
+) -> tuple[str, dict[str, Any], str | None, str | None]:
+    """Return document type, extracted fields, multi-object warning, and extraction warning."""
+    if run_data.get("extraction_step_confidence") == "not_found":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Could not find an LLM extraction step in this run. "
+                "Verify the DocsAI workflow includes an extraction step "
+                "and that the run completed successfully."
+            ),
+        )
     llm_output = run_data.get("llm_output")
     if llm_output is None:
         raise HTTPException(
@@ -234,7 +268,15 @@ def _extract_fields_from_run(run_data: dict[str, Any]) -> tuple[str, dict[str, A
                 "Check that the run completed and has an extraction step."
             ),
         )
-    return document_type, extracted_fields, _multiple_document_warning(llm_output)
+    warning, document_count = _multiple_document_info(llm_output)
+    run_data["multiple_documents_warning"] = bool(warning)
+    run_data["document_count"] = document_count
+    return (
+        document_type,
+        extracted_fields,
+        warning,
+        _extraction_step_warning(run_data),
+    )
 
 
 def _sanitize_table_rows(rows: list[Any]) -> list[dict[str, str]]:
@@ -271,11 +313,19 @@ def _validate_and_sanitize_golden_fields(golden_fields: dict[str, Any]) -> dict[
 
 
 def _calculate_f1(results: dict[str, dict[str, Any]]) -> dict[str, float | int]:
-    """Calculate precision, recall, and F1 from new field statuses."""
+    """Calculate precision, recall, and F1 from new field statuses.
+
+    Fields with status PRESENT or ABSENT (empty golden value, existence-only
+    check) are informational and excluded from the tp/fp/fn accuracy counts.
+    """
     tp = 0
     fp = 0
     fn = 0
+    informational_fields = 0
     for result in results.values():
+        if result.get("status") in ("PRESENT", "ABSENT"):
+            informational_fields += 1
+            continue
         line_items = result.get("line_items")
         if isinstance(line_items, dict) and isinstance(line_items.get("f1_counts"), dict):
             counts = line_items["f1_counts"]
@@ -296,6 +346,7 @@ def _calculate_f1(results: dict[str, dict[str, Any]]) -> dict[str, float | int]:
         "precision": round(precision, 4),
         "recall": round(recall, 4),
         "f1": round(f1, 4),
+        "informational_fields": informational_fields,
     }
 
 
@@ -351,6 +402,7 @@ def _summarize_report(results: dict[str, dict[str, Any]]) -> dict[str, int]:
         and result["ocr_search"].get("verdict") == "OCR_LIMITATION"
     )
     uncertain_unresolved = sum(1 for result in results.values() if result.get("status") == "GREY_UNRESOLVED")
+    informational = sum(1 for result in results.values() if result.get("status") in ("PRESENT", "ABSENT"))
     return {
         "total_fields": len(results),
         "passed": sum(1 for result in results.values() if result.get("status") == "TP"),
@@ -360,6 +412,7 @@ def _summarize_report(results: dict[str, dict[str, Any]]) -> dict[str, int]:
         "uncertain_unresolved": uncertain_unresolved,
         "prompt_problems": prompt_problems,
         "ocr_limitations": ocr_limitations,
+        "informational_fields": informational,
     }
 
 
@@ -368,7 +421,7 @@ def run_ocr_eval(run_id: str, golden_fields: dict[str, Any], eval_type: str = "f
     try:
         run_data = _fetch_run_data(run_id)
         ocr_markdown = clean_ocr_markdown(run_data["ocr_markdown"])
-        document_type, extracted_fields, warning = _extract_fields_from_run(run_data)
+        document_type, extracted_fields, warning, extraction_warning = _extract_fields_from_run(run_data)
         sanitized_golden = _validate_and_sanitize_golden_fields(golden_fields)
         field_types = {field: infer_field_type(field) for field in sanitized_golden}
         results = run_field_comparison(sanitized_golden, extracted_fields, field_types)
@@ -416,8 +469,17 @@ def run_ocr_eval(run_id: str, golden_fields: dict[str, Any], eval_type: str = "f
             "recommended_actions": _recommended_actions(results),
             "summary": _summarize_report(results),
         }
+        run_warnings: list[str] = []
         if warning:
             report["warning"] = warning
+            report["multiple_documents_warning"] = True
+            report["document_count"] = run_data.get("document_count", 0)
+            run_warnings.append(MULTIPLE_DOCUMENTS_RUN_WARNING)
+        if extraction_warning:
+            report["extraction_warning"] = extraction_warning
+            run_warnings.append(extraction_warning)
+        if run_warnings:
+            report["run_warnings"] = run_warnings
 
         report_path = save_report(
             run_id=run_id,
@@ -577,18 +639,7 @@ def debug_docsai_run(
 def get_run_fields(run_id: str) -> dict[str, Any]:
     """Fetch a DocsAI run and return extracted field names and values."""
     run_data = _fetch_run_data(run_id)
-    llm_output = run_data.get("llm_output")
-    if llm_output is None:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "Run does not have a completed extraction step. "
-                "Check that the DocsAI workflow includes an LLM extraction step."
-            ),
-        )
-    document_type = _detect_document_type(llm_output)
-    extracted_fields = _merge_extracted_fields(llm_output, document_type)
-    warning = _multiple_document_warning(llm_output)
+    document_type, extracted_fields, warning, extraction_warning = _extract_fields_from_run(run_data)
     response = {
         "document_type": document_type,
         "extracted_fields": extracted_fields,
@@ -597,9 +648,14 @@ def get_run_fields(run_id: str) -> dict[str, Any]:
             field_name: _field_value_metadata(field_value)
             for field_name, field_value in extracted_fields.items()
         },
+        "extraction_step_confidence": run_data.get("extraction_step_confidence"),
+        "extraction_step_id": run_data.get("extraction_step_id"),
+        "extraction_warning": extraction_warning,
     }
     if warning:
         response["warning"] = warning
+        response["multiple_documents_warning"] = True
+        response["document_count"] = run_data.get("document_count", 0)
     return response
 
 
@@ -627,6 +683,51 @@ def list_reports() -> dict[str, Any]:
     if not os.getenv("RESULTS_PATH", "").strip():
         return {"reports": [], "warning": "RESULTS_PATH is not configured."}
     return {"reports": _load_report_files()}
+
+
+def _accumulate_field_f1_counts(reports: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    """Accumulate TP/FP/FN counts per field name across all saved reports."""
+    per_field_counts: dict[str, dict[str, int]] = {}
+    for report in reports:
+        for field_name, result in _report_field_comparison(report).items():
+            if not isinstance(result, dict):
+                continue
+            counts = per_field_counts.setdefault(field_name, {"tp": 0, "fp": 0, "fn": 0})
+            line_items = result.get("line_items")
+            if isinstance(line_items, dict) and isinstance(line_items.get("f1_counts"), dict):
+                f1_counts = line_items["f1_counts"]
+                counts["tp"] += int(f1_counts.get("tp", 0) or 0)
+                counts["fp"] += int(f1_counts.get("fp", 0) or 0)
+                counts["fn"] += int(f1_counts.get("fn", 0) or 0)
+                continue
+            status = result.get("status")
+            if status == "TP":
+                counts["tp"] += 1
+            elif status in ("FP", "EXTRA"):
+                counts["fp"] += 1
+            elif status == "FN":
+                counts["fn"] += 1
+    return per_field_counts
+
+
+def _worst_and_best_fields(reports: list[dict[str, Any]]) -> tuple[str, str]:
+    """Return the field names with the lowest and highest F1 accumulated across all reports."""
+    if len(reports) < 2:
+        return "", ""
+    per_field_counts = _accumulate_field_f1_counts(reports)
+    field_f1_scores: dict[str, float] = {}
+    for field_name, counts in per_field_counts.items():
+        tp, fp, fn = counts["tp"], counts["fp"], counts["fn"]
+        if tp + fp + fn == 0:
+            continue
+        precision = tp / (tp + fp) if tp + fp else 0.0
+        recall = tp / (tp + fn) if tp + fn else 0.0
+        field_f1_scores[field_name] = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    if not field_f1_scores:
+        return "", ""
+    worst_field = min(field_f1_scores, key=lambda field: field_f1_scores[field])
+    best_field = max(field_f1_scores, key=lambda field: field_f1_scores[field])
+    return worst_field, best_field
 
 
 @app.get("/api/evaluations/summary", tags=["evaluations"])
@@ -667,8 +768,10 @@ def evaluation_summary() -> dict[str, Any]:
                 total_prompt_problems += 1
             if ocr_search.get("verdict") == "OCR_LIMITATION":
                 total_ocr_limitations += 1
-            if result.get("status") in {"GREY", "GREY_UNRESOLVED"} or ocr_search.get("verdict") == "UNCERTAIN":
+            if result.get("status") == "GREY_UNRESOLVED":
                 total_uncertain += 1
+
+    worst_field, best_field = _worst_and_best_fields(reports)
 
     return {
         "total_runs": total_runs,
@@ -679,14 +782,31 @@ def evaluation_summary() -> dict[str, Any]:
         "total_ocr_limitations": total_ocr_limitations,
         "total_uncertain": total_uncertain,
         "reports_by_document_type": reports_by_document_type,
-        "worst_field": "",
-        "best_field": "",
+        "worst_field": worst_field,
+        "best_field": best_field,
     }
+
+
+def _validate_report_name(report_name: str) -> None:
+    """Reject report names that look like path traversal or lack the .json extension.
+
+    Checked before any path is constructed: rejects ".." segments, raw path
+    separators (including a literal or percent-decoded "/"), and names that
+    do not end in ".json".
+    """
+    if (
+        ".." in report_name
+        or "/" in report_name
+        or "\\" in report_name
+        or not report_name.endswith(".json")
+    ):
+        raise HTTPException(status_code=400, detail="Invalid report name.")
 
 
 @app.get("/api/evaluations/reports/{report_name}", tags=["evaluations"])
 def get_report(report_name: str) -> dict[str, Any]:
     """Return a saved evaluation report by file name."""
+    _validate_report_name(report_name)
     results_path = os.getenv("RESULTS_PATH", "").strip()
     if not results_path:
         raise HTTPException(status_code=400, detail="RESULTS_PATH is not configured.")
@@ -705,6 +825,7 @@ def get_report(report_name: str) -> dict[str, Any]:
 @app.delete("/api/evaluations/reports/{report_name}", tags=["evaluations"])
 def delete_report(report_name: str) -> dict[str, Any]:
     """Delete a saved evaluation report by file name."""
+    _validate_report_name(report_name)
     results_path = os.getenv("RESULTS_PATH", "").strip()
     if not results_path:
         raise HTTPException(status_code=400, detail="RESULTS_PATH is not configured.")

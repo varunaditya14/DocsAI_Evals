@@ -1,3 +1,4 @@
+# DEPRECATED — no longer used. Kept for reference only.
 """Golden dataset loader."""
 
 from __future__ import annotations

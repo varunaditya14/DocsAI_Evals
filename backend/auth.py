@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import threading
 import time
 from typing import Any
 
@@ -15,14 +16,17 @@ _TOKEN: str | None = None
 _TOKEN_EXPIRES_AT: datetime | None = None
 _TOKEN_EXPIRY_BUFFER_SECONDS = 60
 _TOKEN_FETCH_RETRY_DELAY_SECONDS = 2
+_TOKEN_LOCK = threading.Lock()
+"""Guards reads/writes of _TOKEN and _TOKEN_EXPIRES_AT for future concurrent workers."""
 
 
 def clear_cached_token() -> None:
     """Clear the cached DocsAI token so the next request fetches a fresh one."""
     global _TOKEN, _TOKEN_EXPIRES_AT
 
-    _TOKEN = None
-    _TOKEN_EXPIRES_AT = None
+    with _TOKEN_LOCK:
+        _TOKEN = None
+        _TOKEN_EXPIRES_AT = None
 
 
 def _extract_token(payload: dict[str, Any]) -> str:
@@ -45,12 +49,13 @@ def _extract_token(payload: dict[str, Any]) -> str:
 
 def _is_cached_token_valid() -> bool:
     """Return True when the cached token exists and is outside the expiry buffer."""
-    return (
-        _TOKEN is not None
-        and _TOKEN_EXPIRES_AT is not None
-        and datetime.now(timezone.utc) + timedelta(seconds=_TOKEN_EXPIRY_BUFFER_SECONDS)
-        < _TOKEN_EXPIRES_AT
-    )
+    with _TOKEN_LOCK:
+        return (
+            _TOKEN is not None
+            and _TOKEN_EXPIRES_AT is not None
+            and datetime.now(timezone.utc) + timedelta(seconds=_TOKEN_EXPIRY_BUFFER_SECONDS)
+            < _TOKEN_EXPIRES_AT
+        )
 
 
 def _fetch_token_once() -> tuple[str, int]:
@@ -84,16 +89,19 @@ def get_bearer_token() -> str:
     global _TOKEN, _TOKEN_EXPIRES_AT
 
     if _is_cached_token_valid():
-        return _TOKEN
+        with _TOKEN_LOCK:
+            return _TOKEN
 
     try:
-        _TOKEN, expiry_minutes = _fetch_token_once()
+        token, expiry_minutes = _fetch_token_once()
     except RuntimeError as first_error:
         time.sleep(_TOKEN_FETCH_RETRY_DELAY_SECONDS)
         try:
-            _TOKEN, expiry_minutes = _fetch_token_once()
+            token, expiry_minutes = _fetch_token_once()
         except RuntimeError as second_error:
             raise RuntimeError(f"DocsAI auth failed after retry: {second_error}") from first_error
 
-    _TOKEN_EXPIRES_AT = datetime.now(timezone.utc) + timedelta(minutes=expiry_minutes)
-    return _TOKEN
+    with _TOKEN_LOCK:
+        _TOKEN = token
+        _TOKEN_EXPIRES_AT = datetime.now(timezone.utc) + timedelta(minutes=expiry_minutes)
+        return _TOKEN

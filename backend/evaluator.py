@@ -127,6 +127,26 @@ def _compare_scalar_values(golden_value: Any, extracted_value: Any, field_type: 
     }
 
 
+def _resolve_grey_line_item_cells(row_results: list[dict[str, Any]]) -> None:
+    """Resolve GREY line-item cells to TP/FP using the LLM semantic judge in place."""
+    for row_result in row_results:
+        for column, cell_result in row_result["column_results"].items():
+            if cell_result.get("status") != "GREY":
+                continue
+            judge_result = llm_semantic_judge(
+                column,
+                cell_result["golden_value"],
+                cell_result["extracted_value"],
+                "text",
+            )
+            cell_result["llm_judge"] = judge_result
+            if judge_result["verdict"] == "PASS":
+                cell_result["status"] = "TP"
+            elif judge_result["verdict"] == "FAIL":
+                cell_result["status"] = "FP"
+            # else: leave status as GREY (uncertain/llm_error); counted as FP in f1_counts below.
+
+
 def compare_line_items(golden_rows: list, extracted_rows: list, columns: list) -> dict[str, Any]:
     """
     Compare line items by matching each golden row to the closest extracted row by
@@ -181,19 +201,13 @@ def compare_line_items(golden_rows: list, extracted_rows: list, columns: list) -
         column_results: dict[str, dict[str, Any]] = {}
         for column in normalized_columns:
             field_type = infer_field_type(column)
-            column_results[column] = _compare_scalar_values(
+            cell_result = _compare_scalar_values(
                 golden_row.get(column, ""),
                 extracted_row.get(column, ""),
                 field_type,
             )
-
-        statuses = [result["status"] for result in column_results.values()]
-        if statuses and all(status == "TP" for status in statuses):
-            row_status = "PASS"
-        elif any(status == "TP" for status in statuses):
-            row_status = "PARTIAL"
-        else:
-            row_status = "FAIL"
+            cell_result["llm_judge"] = None
+            column_results[column] = cell_result
 
         row_results.append(
             {
@@ -201,9 +215,20 @@ def compare_line_items(golden_rows: list, extracted_rows: list, columns: list) -
                 "extracted_row": extracted_row,
                 "match_score": round(best_score, 2),
                 "column_results": column_results,
-                "row_status": row_status,
+                "row_status": "",
             }
         )
+
+    _resolve_grey_line_item_cells(row_results)
+
+    for row_result in row_results:
+        statuses = [result["status"] for result in row_result["column_results"].values()]
+        if statuses and all(status == "TP" for status in statuses):
+            row_result["row_status"] = "PASS"
+        elif any(status == "TP" for status in statuses):
+            row_result["row_status"] = "PARTIAL"
+        else:
+            row_result["row_status"] = "FAIL"
 
     extra_extracted = [normalized_extracted_rows[index] for index in sorted(available_indexes)]
     tp = sum(
@@ -329,6 +354,21 @@ def run_field_comparison(
             }
             continue
 
+        if sanitize_field_value(golden_value) == "":
+            field_exists = field in extracted_fields
+            extracted_value = extracted_fields.get(field, "")
+            results[field] = {
+                "status": "PRESENT" if field_exists else "ABSENT",
+                "golden_value": "",
+                "extracted_value": extracted_value if isinstance(extracted_value, list) else sanitize_field_value(extracted_value),
+                "score": None,
+                "field_type": field_type,
+                "informational": True,
+                "llm_judge": None,
+                "ocr_search": None,
+            }
+            continue
+
         scalar_result = _compare_scalar_values(golden_value, extracted_fields.get(field, ""), field_type)
 
         results[field] = {
@@ -393,6 +433,7 @@ def llm_semantic_judge(
         if verdict not in {"PASS", "FAIL"}:
             verdict = "FAIL"
         reason = lines[1] if len(lines) > 1 else "The judge did not provide a separate reason."
+        logger.info("LLM semantic judge called for field %s: verdict=%s", field_name, verdict)
         return {"verdict": verdict, "reason": reason, "llm_error": False}
     except Exception as exc:
         logger.error("LLM semantic judge failed for %s: %s", field_name, _safe_error_message(exc))
@@ -551,6 +592,7 @@ def llm_ocr_searcher(field_name: str, golden_value: Any, ocr_markdown: str) -> d
         if verdict not in {"PROMPT_PROBLEM", "OCR_LIMITATION", "UNCERTAIN"}:
             verdict = "UNCERTAIN"
         reason = lines[1] if len(lines) > 1 else "The searcher did not provide a separate reason."
+        logger.info("LLM OCR searcher called for field %s: verdict=%s", field_name, verdict)
         return {
             "verdict": verdict,
             "reason": reason,

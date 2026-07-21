@@ -25,6 +25,7 @@ class Settings:
     azure_openai_api_version: str
     azure_auth_method: str
     gds_path: str
+    """Deprecated: only used by the unused golden_loader module. Optional, defaults to empty string."""
     results_path: str
 
     @property
@@ -71,6 +72,6 @@ def get_settings() -> Settings:
         azure_openai_deployment=_optional_env("AZURE_OPENAI_DEPLOYMENT"),
         azure_openai_api_version=_optional_env("AZURE_OPENAI_API_VERSION"),
         azure_auth_method=_optional_env("AZURE_AUTH_METHOD") or "default_credential",
-        gds_path=_required_env("GDS_PATH"),
+        gds_path=_optional_env("GDS_PATH"),
         results_path=_required_env("RESULTS_PATH"),
     )
