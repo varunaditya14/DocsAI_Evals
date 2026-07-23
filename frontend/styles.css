@@ -941,6 +941,44 @@ h3 {
   cursor: not-allowed;
 }
 
+/* ---------- List entry block ---------- */
+
+.list-block {
+  background: #fafaf9;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  margin-bottom: 8px;
+}
+
+.list-block__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.list-block__header .field-name {
+  width: 180px;
+}
+
+.list-values {
+  display: grid;
+  gap: 6px;
+}
+
+.list-value-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.list-value-row .text-input {
+  padding: 5px 8px;
+  font-size: 12px;
+  background: #fff;
+}
+
 /* ---------- Schema import ---------- */
 
 .schema-import-textarea {
@@ -967,47 +1005,13 @@ h3 {
   display: none;
 }
 
-.schema-doctype-section.hidden {
-  display: none;
-}
-
-.schema-fields {
-  display: grid;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.schema-field-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.schema-field-row .field-name {
-  width: 160px;
-  flex-shrink: 0;
-}
-
-.schema-field-value-wrap {
-  flex: 1;
-  min-width: 0;
-}
-
-.schema-table-block {
-  background: #fafaf9;
+.schema-import-summary {
+  padding: 10px 12px;
+  color: var(--text-secondary);
+  background: var(--surface-muted);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px;
-  margin-bottom: 8px;
-}
-
-.schema-table-block__header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-  font-weight: 500;
-  font-size: 13px;
+  border-radius: 8px;
+  font-size: 12px;
 }
 
 /* ---------- Progress ---------- */

@@ -4,6 +4,7 @@ const RESERVED_CHARS_PATTERN = /[[\]{}:'"]/;
 const MAX_FIELDS = 30;
 const MAX_TABLE_COLUMNS = 10;
 const MAX_TABLE_ROWS = 50;
+const MAX_LIST_VALUES = 50;
 const RESTORE_PREFIX = "docsai-evals:";
 const PAGE_STORAGE_KEY = "docsai-evals:active-page";
 const VALID_PAGES = ["dashboard", "run", "history", "reports", "settings"];
@@ -380,7 +381,7 @@ function wireNavigation() {
 /* ---------- Field entry: shared ---------- */
 
 function entryNodes() {
-  return $$(".field-row, .table-block");
+  return $$(".field-row, .table-block, .list-block");
 }
 
 function entryCount() {
@@ -433,6 +434,11 @@ function entryHasContent(entry) {
       entry.querySelector("[data-field-name]").value.trim()
         || tableColumns(entry).some(Boolean)
         || tableRows(entry).flat().some(Boolean),
+    );
+  }
+  if (entry.classList.contains("list-block")) {
+    return Boolean(
+      entry.querySelector("[data-field-name]").value.trim() || listValues(entry).some(Boolean),
     );
   }
   return Boolean(
@@ -642,6 +648,58 @@ function createTableBlock(entry = {}) {
   return block;
 }
 
+function listValues(block) {
+  return Array.from(block.querySelectorAll("[data-list-value]")).map((input) => input.value.trim());
+}
+
+function addListValueRow(block, value = "", shouldUpdate = true) {
+  if (listValues(block).length >= MAX_LIST_VALUES) {
+    showToast("Maximum 50 values per list");
+    return;
+  }
+  const row = document.createElement("div");
+  row.className = "list-value-row";
+  row.innerHTML = `
+    <input class="text-input" data-list-value type="text" placeholder="value" value="${escapeHtml(value)}" />
+    <button class="remove-btn" type="button" title="Remove value">&times;</button>
+  `;
+  block.querySelector("[data-list-values]").appendChild(row);
+  row.querySelector("[data-list-value]").addEventListener("input", updateRunButtonState);
+  row.querySelector("button").addEventListener("click", () => {
+    row.remove();
+    updateRunButtonState();
+  });
+  if (shouldUpdate) updateRunButtonState();
+}
+
+function createListBlock(entry = {}) {
+  if (!ensureEntryLimit()) return null;
+  const block = document.createElement("div");
+  block.className = "list-block";
+  block.dataset.entryType = "list";
+  block.innerHTML = `
+    <div class="list-block__header">
+      <span class="table-tag">LIST</span>
+      <input class="field-name text-input" data-field-name type="text" placeholder="tags" value="${escapeHtml(entry.fieldName || "")}" autocomplete="off" />
+      <div class="table-block__spacer"></div>
+      <button class="btn-add-column" type="button" data-add-value>+ add value</button>
+      <button class="remove-btn" type="button" data-remove title="Remove list">&times;</button>
+    </div>
+    <div class="list-values" data-list-values></div>
+  `;
+  els.fieldRows.appendChild(block);
+  const nameInput = block.querySelector("[data-field-name]");
+  nameInput.addEventListener("input", () => {
+    validateNameInput(nameInput);
+    updateRunButtonState();
+  });
+  block.querySelector("[data-add-value]").addEventListener("click", () => addListValueRow(block));
+  block.querySelector("[data-remove]").addEventListener("click", () => removeEntry(block));
+  (entry.values || []).forEach((value) => addListValueRow(block, value, false));
+  updateRunButtonState();
+  return block;
+}
+
 function addEntryByType(type, data = {}) {
   const normalizedType = type === "text_block" ? "multiline" : type === "line_items" ? "table" : type;
   if (normalizedType === "multiline") {
@@ -649,6 +707,9 @@ function addEntryByType(type, data = {}) {
   }
   if (normalizedType === "table") {
     return createTableBlock(data);
+  }
+  if (normalizedType === "list") {
+    return createListBlock(data);
   }
   return createFieldRow("simple", data.fieldName || data.name || "", data.value || "");
 }
@@ -660,6 +721,7 @@ function wireAddFieldChips() {
       const type = chip.dataset.addType;
       if (type === "multiline") createFieldRow("multiline");
       else if (type === "table") createTableBlock();
+      else if (type === "list") createListBlock();
       else createFieldRow("simple");
       chips.forEach((other) => other.classList.toggle("chip--active", other === chip));
     });
@@ -695,37 +757,95 @@ function isFlatObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function parseDoctypeObject(fieldsObj) {
+function isArrayOfFlatObjects(value) {
+  return Array.isArray(value) && value.length > 0 && isFlatObject(value[0]);
+}
+
+function capitalizeFirst(text) {
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+}
+
+function parseDoctypeObject(fieldsObj, prefix = "") {
   const scalarFields = [];
   const tableFields = [];
+  const listFields = [];
   const skipped = [];
   Object.entries(fieldsObj).forEach(([rawKey, rawValue]) => {
-    const fieldName = toCamelCase(rawKey);
-    if (!fieldName || !FIELD_NAME_PATTERN.test(fieldName)) {
+    const localName = toCamelCase(rawKey);
+    if (!localName || !FIELD_NAME_PATTERN.test(localName)) {
       skipped.push(rawKey);
       return;
     }
+    const fieldName = prefix ? `${prefix}${capitalizeFirst(localName)}` : localName;
+
     if (Array.isArray(rawValue)) {
-      const firstItem = rawValue.find((item) => isFlatObject(item));
-      if (rawValue.length && !firstItem) {
+      if (!rawValue.length) {
+        // Empty array - no example content to infer whether it's a table or a
+        // plain value list, so skip it rather than guess (e.g. *_confidence: []).
         skipped.push(rawKey);
         return;
       }
-      const columns = firstItem
-        ? Object.keys(firstItem)
-            .map(toCamelCase)
-            .filter((column) => FIELD_NAME_PATTERN.test(column))
-        : [];
-      tableFields.push({ fieldName, columns });
+      if (Array.isArray(rawValue[0])) {
+        // Array of arrays - nested list structure isn't representable in the
+        // flat value-list UI, so skip rather than silently misrepresenting it.
+        skipped.push(rawKey);
+        return;
+      }
+      if (isFlatObject(rawValue[0])) {
+        // Table field - merge column names across every row in the template
+        // (not just the first) so rows with different shapes both contribute.
+        const columnKeys = new Set();
+        rawValue.forEach((row) => {
+          if (isFlatObject(row)) Object.keys(row).forEach((key) => columnKeys.add(key));
+        });
+        const columns = [];
+        const excludedColumns = [];
+        Array.from(columnKeys).forEach((columnKey) => {
+          const columnName = toCamelCase(columnKey);
+          const hasNestedValue = rawValue.some(
+            (row) => isFlatObject(row) && (isFlatObject(row[columnKey]) || Array.isArray(row[columnKey])),
+          );
+          if (!columnName || !FIELD_NAME_PATTERN.test(columnName) || hasNestedValue) {
+            excludedColumns.push(columnKey);
+            return;
+          }
+          columns.push(columnName);
+        });
+        if (!columns.length) {
+          // Every column was nested/unsupported - nothing left to import.
+          skipped.push(rawKey);
+          return;
+        }
+        excludedColumns.forEach((columnKey) => skipped.push(`${rawKey}.${columnKey}`));
+        tableFields.push({ fieldName, columns });
+        return;
+      }
+      const hasEmbeddedStructure = rawValue.some((item) => isFlatObject(item) || Array.isArray(item));
+      if (hasEmbeddedStructure) {
+        // Mixed array (some plain values, some object/array items) - don't guess
+        // which shape it is; skip rather than silently discarding the odd ones out.
+        skipped.push(rawKey);
+        return;
+      }
+      listFields.push({ fieldName, values: [] });
       return;
     }
+
     if (isFlatObject(rawValue)) {
-      skipped.push(rawKey);
+      // Nested plain object - recurse and flatten its fields under a compound
+      // prefixed name (e.g. object1.subfield1 -> object1Subfield1) instead of
+      // dropping the whole thing.
+      const nested = parseDoctypeObject(rawValue, fieldName);
+      scalarFields.push(...nested.scalarFields);
+      tableFields.push(...nested.tableFields);
+      listFields.push(...nested.listFields);
+      skipped.push(...nested.skipped.map((key) => `${rawKey}.${key}`));
       return;
     }
+
     scalarFields.push({ fieldName, value: isPlaceholderValue(rawValue) ? "" : String(rawValue) });
   });
-  return { scalarFields, tableFields, skipped };
+  return { scalarFields, tableFields, listFields, skipped };
 }
 
 function parseSchemaTemplate(rawText) {
@@ -744,7 +864,7 @@ function parseSchemaTemplate(rawText) {
     throw new Error("The pasted JSON has no fields.");
   }
 
-  const allWrapped = topEntries.every(([, value]) => Array.isArray(value) && value.length && isFlatObject(value[0]));
+  const allWrapped = topEntries.every(([, value]) => isArrayOfFlatObjects(value));
   const skippedDoctypes = [];
   let doctypes;
   if (allWrapped) {
@@ -754,45 +874,18 @@ function parseSchemaTemplate(rawText) {
       ...parseDoctypeObject(value[0]),
     }));
   } else {
-    const hasNestedShape = topEntries.some(([, value]) => Array.isArray(value) && value.length && isFlatObject(value[0]));
-    if (hasNestedShape) {
-      throw new Error("Mix of plain fields and document-type arrays detected - paste either a single flat object or a JSON with one array-of-object per document type.");
-    }
+    // Not every top-level key is a document-type wrapper - treat the whole object
+    // as one document's fields directly. Any array-of-object key here (e.g.
+    // line_items) is handled by parseDoctypeObject as a repeating table field.
     doctypes = [{ key: "fields", label: "Fields", ...parseDoctypeObject(parsed) }];
   }
 
   doctypes.forEach((doctype) => skippedDoctypes.push(...doctype.skipped.map((key) => `${doctype.label}.${key}`)));
-  if (!doctypes.some((doctype) => doctype.scalarFields.length || doctype.tableFields.length)) {
+  if (!doctypes.some((doctype) => doctype.scalarFields.length || doctype.tableFields.length || doctype.listFields.length)) {
     throw new Error("No supported fields were found in the pasted JSON.");
   }
 
   return { doctypes, skippedDoctypes };
-}
-
-function captureSchemaSectionState() {
-  const doctype = activeSchemaDoctypeData();
-  if (!doctype) return;
-  const section = els.schemaImportGenerated.querySelector(`[data-doctype-section="${cssEscape(doctype.key)}"]`);
-  if (!section) return;
-
-  doctype.scalarFields.forEach((field) => {
-    const input = section.querySelector(`[data-schema-field="${cssEscape(field.fieldName)}"] [data-schema-value]`);
-    if (input) field.value = input.value;
-  });
-
-  doctype.tableFields.forEach((tableField) => {
-    const block = section.querySelector(`[data-schema-table="${cssEscape(tableField.fieldName)}"]`);
-    if (!block) return;
-    const rowNodes = Array.from(block.querySelectorAll("[data-schema-row]"));
-    tableField.rows = rowNodes.map((rowNode) => {
-      const row = {};
-      tableField.columns.forEach((column) => {
-        const cell = rowNode.querySelector(`[data-schema-cell="${cssEscape(column)}"]`);
-        row[column] = cell ? cell.value : "";
-      });
-      return row;
-    });
-  });
 }
 
 function renderSchemaDoctypeTabs(doctypes) {
@@ -805,124 +898,54 @@ function renderSchemaDoctypeTabs(doctypes) {
     .join("");
 }
 
-function renderSchemaSection(doctype) {
-  const scalarRowsHtml = doctype.scalarFields
-    .map(
-      (field) => `
-        <div class="schema-field-row" data-schema-field="${escapeHtml(field.fieldName)}">
-          <input class="field-name text-input" type="text" value="${escapeHtml(field.fieldName)}" disabled />
-          <div class="schema-field-value-wrap">
-            <input class="field-value text-input" data-schema-value type="text" placeholder="expected value" value="${escapeHtml(field.value)}" />
-          </div>
-        </div>
-      `,
-    )
-    .join("");
-
-  const tableBlocksHtml = doctype.tableFields
-    .map((tableField) => {
-      const rowsHtml = tableField.rows
-        .map(
-          (row, rowIndex) => `
-            <tr data-schema-row="${rowIndex}">
-              ${tableField.columns
-                .map(
-                  (column) =>
-                    `<td><input class="text-input" data-schema-cell="${escapeHtml(column)}" type="text" placeholder="${escapeHtml(column)}" value="${escapeHtml(row[column] || "")}" /></td>`,
-                )
-                .join("")}
-              <td><button class="remove-btn" type="button" data-schema-remove-row title="Remove row">&times;</button></td>
-            </tr>
-          `,
-        )
-        .join("");
-      return `
-        <div class="schema-table-block" data-schema-table="${escapeHtml(tableField.fieldName)}">
-          <div class="schema-table-block__header">
-            <span class="table-tag">TABLE</span>
-            <span>${escapeHtml(tableField.fieldName)}</span>
-          </div>
-          <table class="table-block__data">
-            <thead><tr>${tableField.columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}<th></th></tr></thead>
-            <tbody>${rowsHtml}</tbody>
-          </table>
-          <button class="add-row-link" type="button" data-schema-add-row>+ add row</button>
-        </div>
-      `;
-    })
-    .join("");
-
-  return `
-    <div class="schema-doctype-section" data-doctype-section="${escapeHtml(doctype.key)}">
-      <div class="schema-fields">${scalarRowsHtml}</div>
-      ${tableBlocksHtml}
-    </div>
-  `;
-}
-
-function renderSchemaSections() {
-  els.schemaImportGenerated.classList.toggle("hidden", !state.schemaDoctypes.length);
-  els.schemaImportGenerated.innerHTML = state.schemaDoctypes.map(renderSchemaSection).join("");
-  state.schemaDoctypes.forEach((doctype) => {
-    const section = els.schemaImportGenerated.querySelector(`[data-doctype-section="${cssEscape(doctype.key)}"]`);
-    if (section) section.classList.toggle("hidden", doctype.key !== state.activeSchemaDoctype);
-  });
-}
-
-function cssEscape(value) {
-  return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+function renderSchemaSummary(doctype) {
+  if (!doctype) {
+    els.schemaImportGenerated.classList.add("hidden");
+    els.schemaImportGenerated.innerHTML = "";
+    return;
+  }
+  const parts = [];
+  if (doctype.scalarFields.length) parts.push(`${doctype.scalarFields.length} field${doctype.scalarFields.length === 1 ? "" : "s"}`);
+  if (doctype.tableFields.length) parts.push(`${doctype.tableFields.length} table${doctype.tableFields.length === 1 ? "" : "s"}`);
+  if (doctype.listFields.length) parts.push(`${doctype.listFields.length} list${doctype.listFields.length === 1 ? "" : "s"}`);
+  const summary = parts.length ? parts.join(", ") : "No supported fields";
+  els.schemaImportGenerated.classList.remove("hidden");
+  els.schemaImportGenerated.innerHTML = `<p class="schema-import-summary">${escapeHtml(doctype.label)}: ${escapeHtml(summary)} added to Expected field values below - edit them there.</p>`;
 }
 
 function clearSchemaGeneratedEntries() {
   Array.from(els.fieldRows.querySelectorAll('[data-schema-generated="true"]')).forEach((node) => node.remove());
 }
 
-function activeSchemaDoctypeData() {
-  return state.schemaDoctypes.find((doctype) => doctype.key === state.activeSchemaDoctype) || null;
+function schemaGeneratedEntriesHaveContent() {
+  return Array.from(els.fieldRows.querySelectorAll('[data-schema-generated="true"]')).some((node) => entryHasContent(node));
 }
 
-function syncSchemaSectionToFieldRows() {
-  captureSchemaSectionState();
-  clearSchemaGeneratedEntries();
-  const doctype = activeSchemaDoctypeData();
-  if (!doctype) {
-    updateRunButtonState();
-    return;
+function seedDoctypeIntoFieldRows(doctype) {
+  if (schemaGeneratedEntriesHaveContent()) {
+    if (!window.confirm("Switch document type? This will replace your current field values.")) return;
   }
+  clearSchemaGeneratedEntries();
+  state.activeSchemaDoctype = doctype.key;
+  renderSchemaDoctypeTabs(state.schemaDoctypes);
+  renderSchemaSummary(doctype);
 
   doctype.scalarFields.forEach((field) => {
-    const value = (field.value || "").trim();
-    if (!value) return;
-    const node = addEntryByType("simple", { fieldName: field.fieldName, value });
+    const node = addEntryByType("simple", { fieldName: field.fieldName, value: field.value });
     if (node) node.dataset.schemaGenerated = "true";
   });
-
   doctype.tableFields.forEach((tableField) => {
-    const rows = tableField.rows
-      .map((row) => tableField.columns.map((column) => (row[column] || "").trim()))
-      .filter((row) => row.some((cell) => cell !== ""));
-    if (!rows.length) return;
-    const node = addEntryByType("table", { fieldName: tableField.fieldName, columns: tableField.columns, rows });
+    const node = addEntryByType("table", { fieldName: tableField.fieldName, columns: tableField.columns, rows: [] });
+    if (node) node.dataset.schemaGenerated = "true";
+  });
+  doctype.listFields.forEach((listField) => {
+    const node = addEntryByType("list", { fieldName: listField.fieldName, values: [] });
     if (node) node.dataset.schemaGenerated = "true";
   });
 
+  els.jsonPreviewDocType.value = doctype.key;
+  validateNameInput(els.jsonPreviewDocType);
   updateRunButtonState();
-}
-
-let schemaSyncTimer = null;
-function scheduleSchemaSync() {
-  if (schemaSyncTimer) window.clearTimeout(schemaSyncTimer);
-  schemaSyncTimer = window.setTimeout(syncSchemaSectionToFieldRows, 250);
-}
-
-function setActiveSchemaDoctype(key) {
-  captureSchemaSectionState();
-  state.activeSchemaDoctype = key;
-  renderSchemaDoctypeTabs(state.schemaDoctypes);
-  Array.from(els.schemaImportGenerated.querySelectorAll("[data-doctype-section]")).forEach((section) => {
-    section.classList.toggle("hidden", section.dataset.doctypeSection !== key);
-  });
-  syncSchemaSectionToFieldRows();
 }
 
 function handleParseSchema() {
@@ -935,17 +958,10 @@ function handleParseSchema() {
   }
   try {
     const { doctypes, skippedDoctypes } = parseSchemaTemplate(rawText);
-    state.schemaDoctypes = doctypes.map((doctype) => ({
-      ...doctype,
-      tableFields: doctype.tableFields.map((field) => ({ ...field, rows: [] })),
-    }));
-    state.activeSchemaDoctype = doctypes[0].key;
-    renderSchemaDoctypeTabs(state.schemaDoctypes);
-    renderSchemaSections();
-    syncJsonPreviewDocTypeVisibility();
-    syncSchemaSectionToFieldRows();
+    state.schemaDoctypes = doctypes;
+    seedDoctypeIntoFieldRows(doctypes[0]);
     if (skippedDoctypes.length) {
-      showToast(`Some fields were skipped (unsupported shape): ${skippedDoctypes.join(", ")}`);
+      showToast(`Some fields could not be imported (unsupported shape or no example content): ${skippedDoctypes.join(", ")}`);
     }
   } catch (error) {
     els.schemaImportError.textContent = error.message;
@@ -958,40 +974,8 @@ function wireSchemaImport() {
   els.schemaImportDoctypes.addEventListener("click", (event) => {
     const button = event.target.closest("[data-schema-doctype]");
     if (!button) return;
-    setActiveSchemaDoctype(button.dataset.schemaDoctype);
-  });
-  els.schemaImportGenerated.addEventListener("input", (event) => {
-    if (event.target.closest("[data-schema-value], [data-schema-cell]")) scheduleSchemaSync();
-  });
-  els.schemaImportGenerated.addEventListener("click", (event) => {
-    const addRowButton = event.target.closest("[data-schema-add-row]");
-    if (addRowButton) {
-      captureSchemaSectionState();
-      const block = addRowButton.closest("[data-schema-table]");
-      const doctype = activeSchemaDoctypeData();
-      const tableField = doctype?.tableFields.find((field) => field.fieldName === block.dataset.schemaTable);
-      if (tableField && tableField.rows.length < MAX_TABLE_ROWS) {
-        tableField.rows.push({});
-        renderSchemaSections();
-        syncSchemaSectionToFieldRows();
-      } else if (tableField) {
-        showToast("Maximum 50 rows per table");
-      }
-      return;
-    }
-    const removeRowButton = event.target.closest("[data-schema-remove-row]");
-    if (removeRowButton) {
-      captureSchemaSectionState();
-      const row = removeRowButton.closest("[data-schema-row]");
-      const block = removeRowButton.closest("[data-schema-table]");
-      const doctype = activeSchemaDoctypeData();
-      const tableField = doctype?.tableFields.find((field) => field.fieldName === block.dataset.schemaTable);
-      if (tableField) {
-        tableField.rows.splice(Number(row.dataset.schemaRow), 1);
-        renderSchemaSections();
-        syncSchemaSectionToFieldRows();
-      }
-    }
+    const doctype = state.schemaDoctypes.find((item) => item.key === button.dataset.schemaDoctype);
+    if (doctype) seedDoctypeIntoFieldRows(doctype);
   });
 }
 
@@ -1011,7 +995,7 @@ function collectGoldenFields(showErrors = false) {
     const nameResult = validateNameInput(nameInput, null, undefined, showErrors);
     const name = nameResult.value;
 
-    if (!name && type !== "table") return;
+    if (!name && type !== "table" && type !== "list") return;
     if (!name && !entryHasContent(entry)) return;
     if (!name && entryHasContent(entry)) {
       errors.push("Field name is required for entries with values");
@@ -1053,6 +1037,16 @@ function collectGoldenFields(showErrors = false) {
       return;
     }
 
+    if (type === "list") {
+      const values = listValues(entry).filter((value) => value !== "");
+      if (!values.length) {
+        warnings.push(`List ${name} has no values - it will check only that the field exists in extraction output`);
+      }
+      fields[name] = values;
+      entries.push({ type: "list", fieldName: name, values });
+      return;
+    }
+
     const value = entry.querySelector("[data-field-value]").value.trim();
     fields[name] = value;
     entries.push({ type, fieldName: name, value });
@@ -1069,35 +1063,7 @@ function jsonPreviewDocTypeKey() {
   return result.isValid && result.value ? result.value : "document";
 }
 
-function syncJsonPreviewDocTypeVisibility() {
-  els.jsonPreviewDocTypeHead.classList.toggle("hidden", state.schemaDoctypes.length > 0);
-}
-
-function schemaDoctypeFieldsObject(doctype) {
-  const fields = {};
-  doctype.scalarFields.forEach((field) => {
-    const value = (field.value || "").trim();
-    if (value) fields[field.fieldName] = value;
-  });
-  doctype.tableFields.forEach((tableField) => {
-    const rows = tableField.rows
-      .map((row) => Object.fromEntries(tableField.columns.map((column) => [column, (row[column] || "").trim()])))
-      .filter((row) => Object.values(row).some((cell) => cell !== ""));
-    if (rows.length) fields[tableField.fieldName] = rows;
-  });
-  return fields;
-}
-
 function buildPreviewJson() {
-  if (state.schemaDoctypes.length) {
-    captureSchemaSectionState();
-    const wrapped = {};
-    state.schemaDoctypes.forEach((doctype) => {
-      wrapped[doctype.key] = [schemaDoctypeFieldsObject(doctype)];
-    });
-    const activeFields = wrapped[state.activeSchemaDoctype]?.[0] || {};
-    return { fields: activeFields, wrapped };
-  }
   const { fields } = collectGoldenFields(false);
   const docTypeKey = jsonPreviewDocTypeKey();
   return { fields, wrapped: { [docTypeKey]: [fields] } };

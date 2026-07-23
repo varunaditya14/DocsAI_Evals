@@ -84,6 +84,11 @@ def _is_line_items_value(value: Any) -> bool:
     return isinstance(value, list) and bool(value) and isinstance(value[0], dict)
 
 
+def _is_scalar_list_value(value: Any) -> bool:
+    """Return True when a value is a non-empty list of plain values (not row dicts)."""
+    return isinstance(value, list) and bool(value) and not isinstance(value[0], dict)
+
+
 def _coerce_row_dict(row: Any) -> dict[str, Any]:
     """Return a dictionary row or an empty row for unsupported values."""
     return row if isinstance(row, dict) else {}
@@ -276,6 +281,103 @@ def compare_line_items(golden_rows: list, extracted_rows: list, columns: list) -
     }
 
 
+def _resolve_grey_list_items(item_results: list[dict[str, Any]], field_name: str) -> None:
+    """Resolve GREY scalar-list items to TP/FP using the LLM semantic judge in place."""
+    for item_result in item_results:
+        if item_result.get("status") != "GREY":
+            continue
+        judge_result = llm_semantic_judge(
+            field_name,
+            item_result["golden_value"],
+            item_result["extracted_value"],
+            "text",
+        )
+        item_result["llm_judge"] = judge_result
+        if judge_result["verdict"] == "PASS":
+            item_result["status"] = "TP"
+        elif judge_result["verdict"] == "FAIL":
+            item_result["status"] = "FP"
+        # else: leave status as GREY (uncertain/llm_error); counted as FP in f1_counts below.
+
+
+def compare_scalar_list(golden_values: list, extracted_value: Any, field_type: str, field_name: str = "") -> dict[str, Any]:
+    """
+    Compare a golden list of plain values against an extracted list by matching each
+    golden value to the closest extracted value (whole-value similarity), mirroring
+    compare_line_items but for scalars instead of row/column dicts.
+    """
+    normalized_golden = [sanitize_field_value(value) for value in golden_values]
+
+    if not isinstance(extracted_value, list) or not extracted_value:
+        return {
+            "status": "FN",
+            "total_golden_values": len(normalized_golden),
+            "total_extracted_values": 0,
+            "matched_count": 0,
+            "missing_values": len(normalized_golden),
+            "extra_values": 0,
+            "item_results": [],
+            "unmatched_golden": normalized_golden,
+            "extra_extracted": [],
+            "f1_counts": {"tp": 0, "fp": 0, "fn": len(normalized_golden)},
+        }
+
+    normalized_extracted = [sanitize_field_value(value) for value in extracted_value if not isinstance(value, dict)]
+    available_indexes = set(range(len(normalized_extracted)))
+    item_results: list[dict[str, Any]] = []
+    unmatched_golden: list[str] = []
+
+    for golden_val in normalized_golden:
+        best_index: int | None = None
+        best_score = 0.0
+        for extracted_index in available_indexes:
+            extracted_val = normalized_extracted[extracted_index]
+            match_score = float(fuzz.ratio(golden_val, extracted_val)) if golden_val or extracted_val else 0.0
+            if match_score > best_score:
+                best_score = match_score
+                best_index = extracted_index
+
+        if best_index is None or best_score < 60:
+            unmatched_golden.append(golden_val)
+            continue
+
+        available_indexes.remove(best_index)
+        extracted_val = normalized_extracted[best_index]
+        item_result = _compare_scalar_values(golden_val, extracted_val, field_type)
+        item_result["match_score"] = round(best_score, 2)
+        item_result["llm_judge"] = None
+        item_results.append(item_result)
+
+    _resolve_grey_list_items(item_results, field_name)
+
+    extra_extracted = [normalized_extracted[index] for index in sorted(available_indexes)]
+    tp = sum(1 for item_result in item_results if item_result["status"] == "TP")
+    fp = sum(1 for item_result in item_results if item_result["status"] in {"FP", "GREY", "EXTRA_INFO"}) + len(extra_extracted)
+    fn = sum(1 for item_result in item_results if item_result["status"] == "FN") + len(unmatched_golden)
+
+    if fn == 0 and fp == 0:
+        status = "TP"
+    elif item_results and tp > 0:
+        status = "PARTIAL"
+    elif len(unmatched_golden) == len(normalized_golden):
+        status = "FN"
+    else:
+        status = "FP"
+
+    return {
+        "status": status,
+        "total_golden_values": len(normalized_golden),
+        "total_extracted_values": len(normalized_extracted),
+        "matched_count": len(item_results),
+        "missing_values": len(unmatched_golden),
+        "extra_values": len(extra_extracted),
+        "item_results": item_results,
+        "unmatched_golden": unmatched_golden,
+        "extra_extracted": extra_extracted,
+        "f1_counts": {"tp": tp, "fp": fp, "fn": fn},
+    }
+
+
 def run_field_comparison(
     golden_fields: dict[str, Any],
     extracted_fields: dict[str, Any],
@@ -349,6 +451,21 @@ def run_field_comparison(
                 "score": None,
                 "field_type": "line_items",
                 "line_items": line_item_result,
+                "llm_judge": None,
+                "ocr_search": None,
+            }
+            continue
+
+        if _is_scalar_list_value(golden_value):
+            extracted_value = extracted_fields.get(field, [])
+            scalar_list_result = compare_scalar_list(golden_value, extracted_value, field_type, field)
+            results[field] = {
+                "status": scalar_list_result["status"],
+                "golden_value": golden_value,
+                "extracted_value": extracted_value,
+                "score": None,
+                "field_type": "scalar_list",
+                "scalar_list": scalar_list_result,
                 "llm_judge": None,
                 "ocr_search": None,
             }
@@ -541,12 +658,58 @@ def _line_items_ocr_search(field_name: str, golden_value: list, ocr_markdown: st
     }
 
 
+def _scalar_list_ocr_search(field_name: str, golden_value: list, ocr_markdown: str) -> dict[str, Any]:
+    """Search each value in a scalar-list golden field in OCR markdown and aggregate the diagnosis."""
+    normalized_markdown = sanitize_field_value(ocr_markdown)
+    found_values: list[dict[str, Any]] = []
+    missing_values: list[dict[str, Any]] = []
+    total_occurrences = 0
+
+    for index, value in enumerate(golden_value, start=1):
+        if isinstance(value, dict):
+            continue
+        normalized_value = sanitize_field_value(value)
+        occurrence_count, _contexts = _search_value_in_markdown(normalized_value, normalized_markdown)
+        total_occurrences += occurrence_count
+        value_result = {
+            "value_index": index,
+            "value": normalized_value,
+            "occurrence_count": occurrence_count,
+        }
+        if occurrence_count > 0:
+            found_values.append(value_result)
+        else:
+            missing_values.append(value_result)
+
+    if found_values and not missing_values:
+        verdict = "PROMPT_PROBLEM"
+        reason = "All list values were found in OCR markdown."
+    elif missing_values and not found_values:
+        verdict = "OCR_LIMITATION"
+        reason = "No list values were found in OCR markdown."
+    else:
+        verdict = "PARTIAL"
+        reason = "Some list values were found in OCR markdown and some were missing."
+
+    return {
+        "verdict": verdict,
+        "reason": reason,
+        "occurrence_count": total_occurrences,
+        "preliminary": "scalar_list_aggregate",
+        "llm_error": False,
+        "found_values": found_values,
+        "missing_values": missing_values,
+    }
+
+
 def llm_ocr_searcher(field_name: str, golden_value: Any, ocr_markdown: str) -> dict[str, Any]:
     """Diagnose whether a failed field is a prompt problem or OCR limitation."""
     try:
         normalized_markdown = sanitize_field_value(ocr_markdown)
         if _is_line_items_value(golden_value):
             return _line_items_ocr_search(field_name, golden_value, normalized_markdown)
+        if _is_scalar_list_value(golden_value):
+            return _scalar_list_ocr_search(field_name, golden_value, normalized_markdown)
 
         normalized_value = sanitize_field_value(golden_value)
         occurrence_count, contexts = _search_value_in_markdown(normalized_value, normalized_markdown)

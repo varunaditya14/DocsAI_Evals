@@ -289,8 +289,18 @@ def _sanitize_table_rows(rows: list[Any]) -> list[dict[str, str]]:
     return sanitized_rows
 
 
+def _is_scalar_list_value(value: Any) -> bool:
+    """True if value is a non-empty list of plain values (not row objects)."""
+    return isinstance(value, list) and bool(value) and not isinstance(value[0], dict)
+
+
+def _sanitize_scalar_list(values: list[Any]) -> list[str]:
+    """Sanitize a list-of-values field, keeping every entry (unlike table rows)."""
+    return [sanitize_field_value(value) for value in values]
+
+
 def _validate_and_sanitize_golden_fields(golden_fields: dict[str, Any]) -> dict[str, Any]:
-    """Validate user-entered fields and return sanitized scalar or table values."""
+    """Validate user-entered fields and return sanitized scalar, list, or table values."""
     if not isinstance(golden_fields, dict) or not golden_fields:
         raise HTTPException(
             status_code=400,
@@ -305,7 +315,9 @@ def _validate_and_sanitize_golden_fields(golden_fields: dict[str, Any]) -> dict[
                 status_code=400,
                 detail={"field": field, "message": validation["error"]},
             )
-        if isinstance(value, list):
+        if _is_scalar_list_value(value):
+            sanitized[str(field).strip()] = _sanitize_scalar_list(value)
+        elif isinstance(value, list):
             sanitized[str(field).strip()] = _sanitize_table_rows(value)
         else:
             sanitized[str(field).strip()] = sanitize_field_value(value)
@@ -329,6 +341,13 @@ def _calculate_f1(results: dict[str, dict[str, Any]]) -> dict[str, float | int]:
         line_items = result.get("line_items")
         if isinstance(line_items, dict) and isinstance(line_items.get("f1_counts"), dict):
             counts = line_items["f1_counts"]
+            tp += int(counts.get("tp", 0) or 0)
+            fp += int(counts.get("fp", 0) or 0)
+            fn += int(counts.get("fn", 0) or 0)
+            continue
+        scalar_list = result.get("scalar_list")
+        if isinstance(scalar_list, dict) and isinstance(scalar_list.get("f1_counts"), dict):
+            counts = scalar_list["f1_counts"]
             tp += int(counts.get("tp", 0) or 0)
             fp += int(counts.get("fp", 0) or 0)
             fn += int(counts.get("fn", 0) or 0)
@@ -696,6 +715,13 @@ def _accumulate_field_f1_counts(reports: list[dict[str, Any]]) -> dict[str, dict
             line_items = result.get("line_items")
             if isinstance(line_items, dict) and isinstance(line_items.get("f1_counts"), dict):
                 f1_counts = line_items["f1_counts"]
+                counts["tp"] += int(f1_counts.get("tp", 0) or 0)
+                counts["fp"] += int(f1_counts.get("fp", 0) or 0)
+                counts["fn"] += int(f1_counts.get("fn", 0) or 0)
+                continue
+            scalar_list = result.get("scalar_list")
+            if isinstance(scalar_list, dict) and isinstance(scalar_list.get("f1_counts"), dict):
+                f1_counts = scalar_list["f1_counts"]
                 counts["tp"] += int(f1_counts.get("tp", 0) or 0)
                 counts["fp"] += int(f1_counts.get("fp", 0) or 0)
                 counts["fn"] += int(f1_counts.get("fn", 0) or 0)
