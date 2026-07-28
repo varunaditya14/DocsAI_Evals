@@ -31,8 +31,6 @@ const state = {
   historyPage: 1,
   historyPageSize: 6,
   progressTimer: null,
-  schemaDoctypes: [],
-  activeSchemaDoctype: "",
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -77,14 +75,10 @@ const els = {
   schemaImportInput: $("#schema-import-input"),
   schemaImportParseButton: $("#schema-import-parse-button"),
   schemaImportError: $("#schema-import-error"),
-  schemaImportDoctypes: $("#schema-import-doctypes"),
   schemaImportGenerated: $("#schema-import-generated"),
 
   sideTabs: $$("[data-side-tab]"),
   sidePanels: $$("[data-side-panel]"),
-  jsonPreviewDocTypeHead: $("#json-preview-doctype-head"),
-  jsonPreviewDocType: $("#json-preview-doctype"),
-  jsonPreviewCopyButton: $("#json-preview-copy-button"),
   jsonPreviewOutput: $("#json-preview-output"),
   jsonPreviewEmpty: $("#json-preview-empty"),
 
@@ -121,6 +115,11 @@ const els = {
 
   toast: $("#toast"),
 
+  confirmDialog: $("#confirm-dialog"),
+  confirmDialogMessage: $("#confirm-dialog-message"),
+  confirmDialogOk: $("#confirm-dialog-ok"),
+  confirmDialogCancel: $("#confirm-dialog-cancel"),
+
   reportModal: $("#report-modal"),
   modalCloseButton: $("#modal-close-button"),
   modalFilename: $("#modal-filename"),
@@ -130,7 +129,7 @@ const els = {
   modalF1: $("#modal-f1"),
   modalPrecision: $("#modal-precision"),
   modalRecall: $("#modal-recall"),
-  tabs: $$(".tab"),
+  tabs: $$("#report-modal .tab"),
   tabPanels: $$(".tab-panel"),
   modalLegacyNote: $("#modal-legacy-note"),
   modalLegacyData: $("#modal-legacy-data"),
@@ -214,6 +213,41 @@ function showToast(message) {
   els.toast.textContent = message;
   els.toast.classList.add("show");
   window.setTimeout(() => els.toast.classList.remove("show"), 2800);
+}
+
+// In-app replacement for window.confirm() so confirmation prompts match the
+// site's own styling instead of a native browser dialog. Resolves true/false.
+function showConfirmDialog(message, { okLabel = "OK", cancelLabel = "Cancel", danger = false } = {}) {
+  return new Promise((resolve) => {
+    setText(els.confirmDialogMessage, message);
+    els.confirmDialogOk.textContent = okLabel;
+    els.confirmDialogOk.className = `btn ${danger ? "btn--danger" : "btn--primary"}`;
+    els.confirmDialogCancel.textContent = cancelLabel;
+    els.confirmDialog.classList.remove("hidden");
+
+    const cleanup = (result) => {
+      els.confirmDialog.classList.add("hidden");
+      els.confirmDialogOk.removeEventListener("click", onOk);
+      els.confirmDialogCancel.removeEventListener("click", onCancel);
+      els.confirmDialog.removeEventListener("click", onOverlay);
+      document.removeEventListener("keydown", onKeydown);
+      resolve(result);
+    };
+    const onOk = () => cleanup(true);
+    const onCancel = () => cleanup(false);
+    const onOverlay = (event) => {
+      if (event.target === els.confirmDialog) cleanup(false);
+    };
+    const onKeydown = (event) => {
+      if (event.key === "Escape") cleanup(false);
+      if (event.key === "Enter") cleanup(true);
+    };
+
+    els.confirmDialogOk.addEventListener("click", onOk);
+    els.confirmDialogCancel.addEventListener("click", onCancel);
+    els.confirmDialog.addEventListener("click", onOverlay);
+    document.addEventListener("keydown", onKeydown);
+  });
 }
 
 function setButtonLoading(button, isLoading, label) {
@@ -505,7 +539,10 @@ function createFieldRow(type = "simple", name = "", value = "") {
   row.className = "field-row";
   row.dataset.entryType = isMultiline ? "multiline" : "simple";
   row.innerHTML = `
-    <input class="field-name text-input" data-field-name type="text" placeholder="fieldName" value="${escapeHtml(name)}" autocomplete="off" />
+    <div class="field-name-wrap">
+      <input class="field-name text-input" data-field-name type="text" placeholder="fieldName" value="${escapeHtml(name)}" autocomplete="off" />
+      <small class="field-notice" data-field-notice></small>
+    </div>
     <div class="field-value-wrap">
       ${valueControlHtml(isMultiline, value)}
       <button class="value-toggle" type="button" data-toggle-multiline title="Switch to ${isMultiline ? "single line" : "multiline"}">&#8597;</button>
@@ -518,6 +555,7 @@ function createFieldRow(type = "simple", name = "", value = "") {
     validateNameInput(nameInput);
     updateRunButtonState();
   });
+  wireCamelCaseAutoCorrect(nameInput, () => row.querySelector("[data-field-notice]"));
   wireValueControl(row.querySelector("[data-field-value]"));
   row.querySelector("[data-toggle-multiline]").addEventListener("click", () => toggleFieldRowType(row));
   row.querySelector("[data-remove]").addEventListener("click", () => removeEntry(row));
@@ -575,6 +613,11 @@ function addTableColumn(block, columnName = "") {
     rebuildTableRows(block);
     updateRunButtonState();
   });
+  wireCamelCaseAutoCorrect(input, () => block.querySelector("[data-columns-notice]"), () => {
+    resizeColumnInput(input);
+    pill.classList.remove("is-invalid");
+    rebuildTableRows(block);
+  });
   pill.querySelector(".col-pill__remove").addEventListener("click", () => {
     const columnIndex = Array.from(columnsContainer.children).indexOf(pill);
     const currentRows = tableRows(block);
@@ -621,12 +664,16 @@ function createTableBlock(entry = {}) {
   block.innerHTML = `
     <div class="table-block__header">
       <span class="table-tag">TABLE</span>
-      <input class="field-name text-input" data-field-name type="text" placeholder="lineItems" value="${escapeHtml(entry.fieldName || "")}" autocomplete="off" />
+      <div class="field-name-wrap">
+        <input class="field-name text-input" data-field-name type="text" placeholder="lineItems" value="${escapeHtml(entry.fieldName || "")}" autocomplete="off" />
+        <small class="field-notice" data-field-notice></small>
+      </div>
       <div class="table-block__spacer"></div>
       <button class="btn-add-column" type="button" data-add-column>+ add column</button>
       <button class="remove-btn" type="button" data-remove title="Remove table">&times;</button>
     </div>
     <div class="col-pill-row" data-columns></div>
+    <small class="field-notice" data-columns-notice></small>
     <table class="table-block__data">
       <thead><tr data-column-headers></tr></thead>
       <tbody data-table-rows></tbody>
@@ -639,6 +686,7 @@ function createTableBlock(entry = {}) {
     validateNameInput(nameInput);
     updateRunButtonState();
   });
+  wireCamelCaseAutoCorrect(nameInput, () => block.querySelector("[data-field-notice]"));
   block.querySelector("[data-add-column]").addEventListener("click", () => addTableColumn(block));
   block.querySelector("[data-add-row]").addEventListener("click", () => addTableDataRow(block));
   block.querySelector("[data-remove]").addEventListener("click", () => removeEntry(block));
@@ -680,7 +728,10 @@ function createListBlock(entry = {}) {
   block.innerHTML = `
     <div class="list-block__header">
       <span class="table-tag">LIST</span>
-      <input class="field-name text-input" data-field-name type="text" placeholder="tags" value="${escapeHtml(entry.fieldName || "")}" autocomplete="off" />
+      <div class="field-name-wrap">
+        <input class="field-name text-input" data-field-name type="text" placeholder="tags" value="${escapeHtml(entry.fieldName || "")}" autocomplete="off" />
+        <small class="field-notice" data-field-notice></small>
+      </div>
       <div class="table-block__spacer"></div>
       <button class="btn-add-column" type="button" data-add-value>+ add value</button>
       <button class="remove-btn" type="button" data-remove title="Remove list">&times;</button>
@@ -693,6 +744,7 @@ function createListBlock(entry = {}) {
     validateNameInput(nameInput);
     updateRunButtonState();
   });
+  wireCamelCaseAutoCorrect(nameInput, () => block.querySelector("[data-field-notice]"));
   block.querySelector("[data-add-value]").addEventListener("click", () => addListValueRow(block));
   block.querySelector("[data-remove]").addEventListener("click", () => removeEntry(block));
   (entry.values || []).forEach((value) => addListValueRow(block, value, false));
@@ -732,11 +784,72 @@ function wireAddFieldChips() {
 
 const PLACEHOLDER_VALUE_PATTERN = /^(string|string or -|-|n\/a|na|null|none|)$/i;
 
+const CAMEL_CASE_CORRECT_DELAY = 900;
+
+function flashFieldNotice(element, message, duration = 2600) {
+  if (!element) return;
+  if (element._noticeTimeout) window.clearTimeout(element._noticeTimeout);
+  element.textContent = message;
+  element.classList.add("field-notice--visible");
+  element._noticeTimeout = window.setTimeout(() => {
+    element.classList.remove("field-notice--visible");
+  }, duration);
+}
+
+// Briefly pulses the input so an auto-correction reads as a deliberate,
+// visible change rather than a silent value swap.
+function flashCorrected(input) {
+  input.classList.remove("field-corrected");
+  void input.offsetWidth; // restart the CSS animation if it's already running
+  input.classList.add("field-corrected");
+  window.setTimeout(() => input.classList.remove("field-corrected"), 900);
+}
+
+function applyCamelCaseCorrection(input, getNoticeEl, onCorrected) {
+  const original = input.value.trim();
+  if (!original || FIELD_NAME_PATTERN.test(original)) return false;
+  const converted = toCamelCase(original);
+  if (!converted || !FIELD_NAME_PATTERN.test(converted) || converted === original) return false;
+  input.value = converted;
+  validateNameInput(input);
+  flashCorrected(input);
+  flashFieldNotice(getNoticeEl ? getNoticeEl() : null, `Converted to camelCase: "${converted}"`);
+  if (onCorrected) onCorrected();
+  updateRunButtonState();
+  return true;
+}
+
+// Converts a name to camelCase seamlessly - once typing pauses (like a
+// Grammarly-style live suggestion) or the field loses focus - so a manually
+// typed field/column name never silently fails validation. The raw text is
+// auto-corrected in place with a brief animated flash and a small transient
+// notice confirming what changed, instead of just leaving a red error state.
+function wireCamelCaseAutoCorrect(input, getNoticeEl, onCorrected) {
+  input.setAttribute("spellcheck", "false");
+  input.addEventListener("input", () => {
+    if (input._camelCaseTimer) window.clearTimeout(input._camelCaseTimer);
+    input._camelCaseTimer = window.setTimeout(() => {
+      if (document.activeElement === input) {
+        applyCamelCaseCorrection(input, getNoticeEl, onCorrected);
+      }
+    }, CAMEL_CASE_CORRECT_DELAY);
+  });
+  input.addEventListener("blur", () => {
+    if (input._camelCaseTimer) window.clearTimeout(input._camelCaseTimer);
+    applyCamelCaseCorrection(input, getNoticeEl, onCorrected);
+  });
+}
+
 function toCamelCase(key) {
-  const words = String(key ?? "")
+  const withWordBoundaries = String(key ?? "")
     .trim()
-    .split(/[^a-zA-Z0-9]+/)
-    .filter(Boolean);
+    // Split camelCase/PascalCase runs at internal case transitions
+    // (invoiceDate -> invoice Date) before falling back to separator
+    // splitting, so already-camelCase keys keep their word boundaries
+    // instead of being flattened to all-lowercase.
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2");
+  const words = withWordBoundaries.split(/[^a-zA-Z0-9]+/).filter(Boolean);
   if (!words.length) return "";
   return words
     .map((word, index) => {
@@ -757,9 +870,72 @@ function isFlatObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function isArrayOfFlatObjects(value) {
-  return Array.isArray(value) && value.length > 0 && isFlatObject(value[0]);
+// A doctype wrapper is either a plain nested object ("invoice": {...}) or
+// DocsAI's single-document-in-an-array export style ("taxInvoice": [{...}]),
+// including an empty array when a document type had no example data
+// ("purchaseOrder": []). Only a *single*-element array counts - multi-element
+// arrays at the top level are ambiguous with genuine repeating tables and are
+// left to the generic per-field table detection instead.
+function isDoctypeWrapper(value) {
+  if (isFlatObject(value)) return true;
+  return Array.isArray(value) && value.length <= 1 && (value.length === 0 || isFlatObject(value[0]));
 }
+
+function doctypeWrapperFields(value) {
+  if (isFlatObject(value)) return value;
+  return value[0] || {};
+}
+
+// True once an object holds at least one array value - the signal that real
+// document/line-item content has been reached, as opposed to another single-key
+// envelope layer still wrapping the actual data.
+function looksLikeContentLevel(obj) {
+  return Object.values(obj).some((value) => Array.isArray(value));
+}
+
+// Real exports are often wrapped in one or more single-key envelopes before
+// reaching the actual document types, e.g.
+// { success, caseSummary: { summaryText: { taxInvoice: [...], purchaseOrder: [...] } } }.
+// Drill down through those envelope layers so doctype detection runs at the
+// level that actually holds the documents, instead of only ever checking the
+// outermost level of the pasted JSON.
+function unwrapToDoctypeLevel(obj) {
+  let current = obj;
+  while (isFlatObject(current)) {
+    const entries = Object.entries(current);
+    const relevant = entries.filter(([key]) => !DOCTYPE_METADATA_KEYS.has(String(key).toLowerCase()));
+    const candidates = relevant.length ? relevant : entries;
+    if (candidates.length !== 1) break;
+    const [, value] = candidates[0];
+    if (!isFlatObject(value)) break;
+    if (looksLikeContentLevel(value)) {
+      current = value;
+      break;
+    }
+    current = value;
+  }
+  return current;
+}
+
+const DOCTYPE_METADATA_KEYS = new Set([
+  "success",
+  "extractionconfidence",
+  "documenttype",
+  "classifiedfiles",
+  "categoryvalidationstatus",
+  "categoryconfidence",
+  "detectedformtype",
+  "headerpattern",
+  "processingtimestamp",
+  "processedby",
+  "service",
+  "aibackend",
+  "modelused",
+  "usageinfo",
+  "confidencescore",
+  "source",
+  "filename",
+]);
 
 function capitalizeFirst(text) {
   return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
@@ -770,12 +946,14 @@ function parseDoctypeObject(fieldsObj, prefix = "") {
   const tableFields = [];
   const listFields = [];
   const skipped = [];
+  const renamed = [];
   Object.entries(fieldsObj).forEach(([rawKey, rawValue]) => {
     const localName = toCamelCase(rawKey);
     if (!localName || !FIELD_NAME_PATTERN.test(localName)) {
       skipped.push(rawKey);
       return;
     }
+    if (rawKey !== localName) renamed.push({ from: rawKey, to: localName });
     const fieldName = prefix ? `${prefix}${capitalizeFirst(localName)}` : localName;
 
     if (Array.isArray(rawValue)) {
@@ -800,6 +978,7 @@ function parseDoctypeObject(fieldsObj, prefix = "") {
         });
         const columns = [];
         const excludedColumns = [];
+        const nameToOriginalKey = {};
         Array.from(columnKeys).forEach((columnKey) => {
           const columnName = toCamelCase(columnKey);
           const hasNestedValue = rawValue.some(
@@ -809,7 +988,9 @@ function parseDoctypeObject(fieldsObj, prefix = "") {
             excludedColumns.push(columnKey);
             return;
           }
+          if (columnKey !== columnName) renamed.push({ from: columnKey, to: columnName });
           columns.push(columnName);
+          nameToOriginalKey[columnName] = columnKey;
         });
         if (!columns.length) {
           // Every column was nested/unsupported - nothing left to import.
@@ -817,7 +998,18 @@ function parseDoctypeObject(fieldsObj, prefix = "") {
           return;
         }
         excludedColumns.forEach((columnKey) => skipped.push(`${rawKey}.${columnKey}`));
-        tableFields.push({ fieldName, columns });
+        // Carry the example row values through too (same as scalar fields do)
+        // so a pasted real example pre-fills the table instead of leaving it
+        // with columns but zero rows.
+        const rows = rawValue
+          .filter((row) => isFlatObject(row))
+          .map((row) =>
+            columns.map((columnName) => {
+              const cellValue = row[nameToOriginalKey[columnName]];
+              return isPlaceholderValue(cellValue) || cellValue === undefined ? "" : String(cellValue);
+            }),
+          );
+        tableFields.push({ fieldName, columns, rows });
         return;
       }
       const hasEmbeddedStructure = rawValue.some((item) => isFlatObject(item) || Array.isArray(item));
@@ -840,12 +1032,13 @@ function parseDoctypeObject(fieldsObj, prefix = "") {
       tableFields.push(...nested.tableFields);
       listFields.push(...nested.listFields);
       skipped.push(...nested.skipped.map((key) => `${rawKey}.${key}`));
+      renamed.push(...nested.renamed);
       return;
     }
 
     scalarFields.push({ fieldName, value: isPlaceholderValue(rawValue) ? "" : String(rawValue) });
   });
-  return { scalarFields, tableFields, listFields, skipped };
+  return { scalarFields, tableFields, listFields, skipped, renamed };
 }
 
 function parseSchemaTemplate(rawText) {
@@ -859,58 +1052,186 @@ function parseSchemaTemplate(rawText) {
     throw new Error("Paste a JSON object, not an array or a plain value.");
   }
 
-  const topEntries = Object.entries(parsed);
+  // Real exports commonly wrap the actual documents in one or more single-key
+  // envelopes (e.g. { success, caseSummary: { summaryText: { taxInvoice: [...] } } }).
+  // Drill down to the level that actually holds the document types before
+  // looking for them, instead of only ever checking the outermost level.
+  const unwrapped = unwrapToDoctypeLevel(parsed);
+
+  const topEntries = Object.entries(unwrapped);
   if (!topEntries.length) {
     throw new Error("The pasted JSON has no fields.");
   }
 
-  const allWrapped = topEntries.every(([, value]) => isArrayOfFlatObjects(value));
-  const skippedDoctypes = [];
-  let doctypes;
-  if (allWrapped) {
-    doctypes = topEntries.map(([key, value]) => ({
-      key: toCamelCase(key) || key,
-      label: key,
-      ...parseDoctypeObject(value[0]),
-    }));
+  // DocsAI metadata keys (extractionConfidence, documentType, ...) commonly sit
+  // alongside the real document-type wrappers at the top level. Ignore them when
+  // deciding whether every remaining key looks like a document type, so a stray
+  // metadata field doesn't force the whole payload into one flattened doctype.
+  const relevantEntries = topEntries.filter(([key]) => !DOCTYPE_METADATA_KEYS.has(String(key).toLowerCase()));
+  const entriesToCheck = relevantEntries.length ? relevantEntries : topEntries;
+
+  // A doctype wrapper is a plain object ("invoice": {...}) or DocsAI's
+  // single-document-in-an-array export style ("taxInvoice": [{...}]). Treating
+  // a *_confidence-style single-object array as a "table" was the bug that made
+  // every field of a document collapse into one giant, empty-looking table.
+  const allWrapped = entriesToCheck.every(([, value]) => isDoctypeWrapper(value));
+
+  const combined = { scalarFields: [], tableFields: [], listFields: [], skipped: [], renamed: [], sharedNames: [] };
+  const usedScalarNames = new Set();
+  let label;
+
+  // Union two column lists (preserving first-seen order) and remap every row
+  // from both sides onto the combined column set, so merging two same-named
+  // tables never drops a column or a row - it produces one table wide enough
+  // to hold whichever shape shows up in the run actually being evaluated.
+  const remapRow = (row, fromColumns, toColumns) =>
+    toColumns.map((column) => {
+      const index = fromColumns.indexOf(column);
+      return index === -1 ? "" : row[index] || "";
+    });
+
+  const mergeTableField = (existing, incoming) => {
+    const mergedColumns = [...existing.columns];
+    incoming.columns.forEach((column) => {
+      if (!mergedColumns.includes(column)) mergedColumns.push(column);
+    });
+    const mergedRows = [
+      ...(existing.rows || []).map((row) => remapRow(row, existing.columns, mergedColumns)),
+      ...(incoming.rows || []).map((row) => remapRow(row, incoming.columns, mergedColumns)),
+    ];
+    existing.columns = mergedColumns;
+    existing.rows = mergedRows;
+  };
+
+  const mergeListField = (existing, incoming) => {
+    const seen = new Set(existing.values || []);
+    (incoming.values || []).forEach((value) => {
+      if (!seen.has(value)) {
+        seen.add(value);
+        existing.values.push(value);
+      }
+    });
+  };
+
+  // Field names must exactly match whatever DocsAI's own extraction would use
+  // (e.g. "invoiceNo", "lineItems") so the evaluator can pair golden values up
+  // against the real extracted fields by name. Never prefix a field with its
+  // parent document type - that would produce names DocsAI never returns
+  // (e.g. "taxInvoiceInvoiceNo"), making every field show up as missing.
+  //
+  // Two document types can legitimately share a field name (e.g. both
+  // taxInvoice and purchaseOrder have their own "lineItems" or "poNo"). A
+  // table/list with the same name is merged (union of columns/values) so no
+  // data is lost. A scalar can only hold one value under one key, so the
+  // first one wins and the collision is reported once instead of silently
+  // dropped per field.
+  const addScalar = (field) => {
+    if (usedScalarNames.has(field.fieldName)) {
+      combined.sharedNames.push(field.fieldName);
+      return;
+    }
+    usedScalarNames.add(field.fieldName);
+    combined.scalarFields.push(field);
+  };
+  const addTable = (field) => {
+    const existing = combined.tableFields.find((item) => item.fieldName === field.fieldName);
+    if (existing) {
+      mergeTableField(existing, field);
+      return;
+    }
+    combined.tableFields.push(field);
+  };
+  const addList = (field) => {
+    const existing = combined.listFields.find((item) => item.fieldName === field.fieldName);
+    if (existing) {
+      mergeListField(existing, field);
+      return;
+    }
+    combined.listFields.push(field);
+  };
+
+  const mergeIn = (parsedFields, keyPrefix) => {
+    parsedFields.scalarFields.forEach(addScalar);
+    parsedFields.tableFields.forEach(addTable);
+    parsedFields.listFields.forEach(addList);
+    combined.renamed.push(...parsedFields.renamed);
+    combined.skipped.push(...parsedFields.skipped.map((key) => (keyPrefix ? `${keyPrefix}.${key}` : key)));
+  };
+
+  // Parses one document-type wrapper entry and merges its fields in,
+  // unprefixed. A wrapper with no example content at all (e.g. "purchaseOrder": [])
+  // is still surfaced as a presence-only field instead of silently vanishing.
+  const mergeDoctypeEntry = (key, value) => {
+    const localName = toCamelCase(key);
+    if (!localName || !FIELD_NAME_PATTERN.test(localName)) {
+      combined.skipped.push(key);
+      return null;
+    }
+    const parsedDoctype = parseDoctypeObject(doctypeWrapperFields(value));
+    if (!parsedDoctype.scalarFields.length && !parsedDoctype.tableFields.length && !parsedDoctype.listFields.length) {
+      addList({ fieldName: localName, values: [] });
+      return key;
+    }
+    mergeIn(parsedDoctype, key);
+    return key;
+  };
+
+  if (allWrapped && entriesToCheck.length > 1) {
+    // Multiple sibling document types (e.g. taxInvoice + purchaseOrder +
+    // proformaInvoice all in the same case) - merge every one into a single
+    // combined field set so everything shows up together instead of behind
+    // separate tabs, keeping each field's own name unprefixed.
+    const labels = [];
+    entriesToCheck.forEach(([key, value]) => {
+      const usedLabel = mergeDoctypeEntry(key, value);
+      if (usedLabel) labels.push(usedLabel);
+    });
+    label = labels.join(", ") || "Fields";
+  } else if (allWrapped && entriesToCheck.length === 1) {
+    const [key] = entriesToCheck[0];
+    mergeDoctypeEntry(key, entriesToCheck[0][1]);
+    label = key;
   } else {
-    // Not every top-level key is a document-type wrapper - treat the whole object
-    // as one document's fields directly. Any array-of-object key here (e.g.
-    // line_items) is handled by parseDoctypeObject as a repeating table field.
-    doctypes = [{ key: "fields", label: "Fields", ...parseDoctypeObject(parsed) }];
+    // Not every top-level key is a document-type wrapper - treat the whole
+    // object as one document's fields directly. Any array-of-object key here
+    // (e.g. lineItems) is handled by parseDoctypeObject as a repeating table.
+    mergeIn(parseDoctypeObject(unwrapped), null);
+    label = "Fields";
   }
 
-  doctypes.forEach((doctype) => skippedDoctypes.push(...doctype.skipped.map((key) => `${doctype.label}.${key}`)));
-  if (!doctypes.some((doctype) => doctype.scalarFields.length || doctype.tableFields.length || doctype.listFields.length)) {
+  if (!combined.scalarFields.length && !combined.tableFields.length && !combined.listFields.length) {
     throw new Error("No supported fields were found in the pasted JSON.");
   }
 
-  return { doctypes, skippedDoctypes };
+  return { label, ...combined };
 }
 
-function renderSchemaDoctypeTabs(doctypes) {
-  els.schemaImportDoctypes.classList.toggle("hidden", doctypes.length <= 1);
-  els.schemaImportDoctypes.innerHTML = doctypes
-    .map(
-      (doctype) =>
-        `<button class="tab ${doctype.key === state.activeSchemaDoctype ? "tab--active" : ""}" type="button" data-schema-doctype="${escapeHtml(doctype.key)}">${escapeHtml(doctype.label)}</button>`,
-    )
-    .join("");
-}
-
-function renderSchemaSummary(doctype) {
-  if (!doctype) {
+function renderSchemaSummary(parsedSchema) {
+  if (!parsedSchema) {
     els.schemaImportGenerated.classList.add("hidden");
     els.schemaImportGenerated.innerHTML = "";
     return;
   }
   const parts = [];
-  if (doctype.scalarFields.length) parts.push(`${doctype.scalarFields.length} field${doctype.scalarFields.length === 1 ? "" : "s"}`);
-  if (doctype.tableFields.length) parts.push(`${doctype.tableFields.length} table${doctype.tableFields.length === 1 ? "" : "s"}`);
-  if (doctype.listFields.length) parts.push(`${doctype.listFields.length} list${doctype.listFields.length === 1 ? "" : "s"}`);
+  if (parsedSchema.scalarFields.length) parts.push(`${parsedSchema.scalarFields.length} field${parsedSchema.scalarFields.length === 1 ? "" : "s"}`);
+  if (parsedSchema.tableFields.length) parts.push(`${parsedSchema.tableFields.length} table${parsedSchema.tableFields.length === 1 ? "" : "s"}`);
+  if (parsedSchema.listFields.length) parts.push(`${parsedSchema.listFields.length} list${parsedSchema.listFields.length === 1 ? "" : "s"}`);
   const summary = parts.length ? parts.join(", ") : "No supported fields";
   els.schemaImportGenerated.classList.remove("hidden");
-  els.schemaImportGenerated.innerHTML = `<p class="schema-import-summary">${escapeHtml(doctype.label)}: ${escapeHtml(summary)} added to Expected field values below - edit them there.</p>`;
+  let html = `<p class="schema-import-summary">${escapeHtml(parsedSchema.label)}: ${escapeHtml(summary)} added to Expected field values below - edit them there.</p>`;
+  if (parsedSchema.renamed && parsedSchema.renamed.length) {
+    const examples = parsedSchema.renamed.slice(0, 3).map((item) => `${item.from} → ${item.to}`).join(", ");
+    const more = parsedSchema.renamed.length > 3 ? ` and ${parsedSchema.renamed.length - 3} more` : "";
+    html += `<p class="schema-import-summary schema-import-summary--info">${parsedSchema.renamed.length} field name${parsedSchema.renamed.length === 1 ? "" : "s"} converted to camelCase (${escapeHtml(examples)}${escapeHtml(more)}).</p>`;
+  }
+  if (parsedSchema.sharedNames && parsedSchema.sharedNames.length) {
+    const uniqueShared = [...new Set(parsedSchema.sharedNames)];
+    html += `<p class="schema-import-summary schema-import-summary--warning">${uniqueShared.join(", ")} ${uniqueShared.length === 1 ? "appears" : "appear"} in more than one document type with a different value - kept the first one. Edit it below if you need the other value.</p>`;
+  }
+  if (parsedSchema.skipped && parsedSchema.skipped.length) {
+    html += `<p class="schema-import-summary schema-import-summary--warning">Could not import: ${escapeHtml(parsedSchema.skipped.join(", "))}.</p>`;
+  }
+  els.schemaImportGenerated.innerHTML = html;
 }
 
 function clearSchemaGeneratedEntries() {
@@ -921,34 +1242,38 @@ function schemaGeneratedEntriesHaveContent() {
   return Array.from(els.fieldRows.querySelectorAll('[data-schema-generated="true"]')).some((node) => entryHasContent(node));
 }
 
-function seedDoctypeIntoFieldRows(doctype) {
+async function seedParsedSchemaIntoFieldRows(parsedSchema) {
   if (schemaGeneratedEntriesHaveContent()) {
-    if (!window.confirm("Switch document type? This will replace your current field values.")) return;
+    const confirmed = await showConfirmDialog(
+      "Re-parsing will replace your previously imported field values. Continue?",
+      { okLabel: "Replace", danger: false },
+    );
+    if (!confirmed) return;
   }
   clearSchemaGeneratedEntries();
-  state.activeSchemaDoctype = doctype.key;
-  renderSchemaDoctypeTabs(state.schemaDoctypes);
-  renderSchemaSummary(doctype);
+  renderSchemaSummary(parsedSchema);
 
-  doctype.scalarFields.forEach((field) => {
+  parsedSchema.scalarFields.forEach((field) => {
     const node = addEntryByType("simple", { fieldName: field.fieldName, value: field.value });
     if (node) node.dataset.schemaGenerated = "true";
   });
-  doctype.tableFields.forEach((tableField) => {
-    const node = addEntryByType("table", { fieldName: tableField.fieldName, columns: tableField.columns, rows: [] });
+  parsedSchema.tableFields.forEach((tableField) => {
+    const node = addEntryByType("table", {
+      fieldName: tableField.fieldName,
+      columns: tableField.columns,
+      rows: tableField.rows || [],
+    });
     if (node) node.dataset.schemaGenerated = "true";
   });
-  doctype.listFields.forEach((listField) => {
+  parsedSchema.listFields.forEach((listField) => {
     const node = addEntryByType("list", { fieldName: listField.fieldName, values: [] });
     if (node) node.dataset.schemaGenerated = "true";
   });
 
-  els.jsonPreviewDocType.value = doctype.key;
-  validateNameInput(els.jsonPreviewDocType);
   updateRunButtonState();
 }
 
-function handleParseSchema() {
+async function handleParseSchema() {
   els.schemaImportError.classList.add("hidden");
   const rawText = els.schemaImportInput.value.trim();
   if (!rawText) {
@@ -957,12 +1282,8 @@ function handleParseSchema() {
     return;
   }
   try {
-    const { doctypes, skippedDoctypes } = parseSchemaTemplate(rawText);
-    state.schemaDoctypes = doctypes;
-    seedDoctypeIntoFieldRows(doctypes[0]);
-    if (skippedDoctypes.length) {
-      showToast(`Some fields could not be imported (unsupported shape or no example content): ${skippedDoctypes.join(", ")}`);
-    }
+    const parsedSchema = parseSchemaTemplate(rawText);
+    await seedParsedSchemaIntoFieldRows(parsedSchema);
   } catch (error) {
     els.schemaImportError.textContent = error.message;
     els.schemaImportError.classList.remove("hidden");
@@ -971,12 +1292,6 @@ function handleParseSchema() {
 
 function wireSchemaImport() {
   els.schemaImportParseButton.addEventListener("click", handleParseSchema);
-  els.schemaImportDoctypes.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-schema-doctype]");
-    if (!button) return;
-    const doctype = state.schemaDoctypes.find((item) => item.key === button.dataset.schemaDoctype);
-    if (doctype) seedDoctypeIntoFieldRows(doctype);
-  });
 }
 
 /* ---------- Collect + validate golden fields ---------- */
@@ -992,7 +1307,22 @@ function collectGoldenFields(showErrors = false) {
     const isTable = entry.classList.contains("table-block");
     const type = isTable ? "table" : entry.dataset.entryType || "simple";
     const nameInput = entry.querySelector("[data-field-name]");
-    const nameResult = validateNameInput(nameInput, null, undefined, showErrors);
+    let nameResult = validateNameInput(nameInput, null, undefined, showErrors);
+    if (showErrors && !nameResult.isEmpty && !nameResult.isValid) {
+      // Last-resort safety net so a name that never got a blur or debounce
+      // pass (e.g. submitted via Enter right after typing) still reaches the
+      // backend as valid camelCase. Gated to showErrors (real submission)
+      // only - this function also runs on every keystroke to refresh the
+      // live JSON preview, and mutating the input there would fight the
+      // smooth debounced correction in wireCamelCaseAutoCorrect.
+      const converted = toCamelCase(nameResult.value);
+      if (converted && FIELD_NAME_PATTERN.test(converted)) {
+        nameInput.value = converted;
+        nameResult = validateNameInput(nameInput, null, undefined, showErrors);
+        flashCorrected(nameInput);
+        flashFieldNotice(entry.querySelector("[data-field-notice]"), `Converted to camelCase: "${converted}"`);
+      }
+    }
     const name = nameResult.value;
 
     if (!name && type !== "table" && type !== "list") return;
@@ -1016,7 +1346,16 @@ function collectGoldenFields(showErrors = false) {
       const validColumns = [];
       let hasColumnError = false;
       entry.querySelectorAll("[data-column-name]").forEach((input) => {
-        const result = validateNameInput(input, null, undefined, showErrors);
+        let result = validateNameInput(input, null, undefined, showErrors);
+        if (showErrors && !result.isEmpty && !result.isValid) {
+          const converted = toCamelCase(result.value);
+          if (converted && FIELD_NAME_PATTERN.test(converted)) {
+            input.value = converted;
+            result = validateNameInput(input, null, undefined, showErrors);
+            flashCorrected(input);
+            flashFieldNotice(entry.querySelector("[data-columns-notice]"), `Converted to camelCase: "${converted}"`);
+          }
+        }
         if (!result.isValid) hasColumnError = true;
         validColumns.push(result.value);
       });
@@ -1058,24 +1397,16 @@ function collectGoldenFields(showErrors = false) {
 
 /* ---------- JSON preview ---------- */
 
-function jsonPreviewDocTypeKey() {
-  const result = validateNameInput(els.jsonPreviewDocType, null, undefined, false);
-  return result.isValid && result.value ? result.value : "document";
-}
-
-function buildPreviewJson() {
-  const { fields } = collectGoldenFields(false);
-  const docTypeKey = jsonPreviewDocTypeKey();
-  return { fields, wrapped: { [docTypeKey]: [fields] } };
-}
-
+// Shows the exact flat golden_fields object that would be submitted for
+// evaluation - not a wrapped/guessed document-type shape, so what you see
+// here is literally what gets sent.
 function renderJsonPreview() {
   if (!els.jsonPreviewOutput) return;
-  const { wrapped } = buildPreviewJson();
-  const isEmpty = Object.values(wrapped).every((docs) => !Object.keys(docs[0] || {}).length);
+  const { fields } = collectGoldenFields(false);
+  const isEmpty = !Object.keys(fields).length;
   els.jsonPreviewOutput.classList.toggle("hidden", isEmpty);
   els.jsonPreviewEmpty.classList.toggle("hidden", !isEmpty);
-  if (!isEmpty) els.jsonPreviewOutput.textContent = JSON.stringify(wrapped, null, 2);
+  if (!isEmpty) els.jsonPreviewOutput.textContent = JSON.stringify(fields, null, 2);
 }
 
 /* ---------- Extracted field hints ---------- */
@@ -1181,9 +1512,6 @@ async function loadRunFields() {
     setText(els.detectedFieldCount, payload.field_count ?? Object.keys(state.extractedFields).length);
     els.detectedPanel.classList.remove("hidden");
     renderExtractedHints(state.extractedFields, state.fieldMetadata);
-    if (!els.jsonPreviewDocType.value.trim() && FIELD_NAME_PATTERN.test(state.documentType)) {
-      els.jsonPreviewDocType.value = state.documentType;
-    }
     renderJsonPreview();
     if (payload.extraction_warning) {
       setBanner(
@@ -1534,7 +1862,8 @@ async function handleReportAction(event) {
   if (!button) return;
   const name = button.dataset.report;
   if (button.dataset.action === "delete") {
-    if (!window.confirm(`Delete report ${name}?`)) return;
+    const confirmed = await showConfirmDialog(`Delete report ${name}?`, { okLabel: "Delete", danger: true });
+    if (!confirmed) return;
     try {
       await api.deleteReport(name);
       state.reportCache.delete(name);
@@ -1665,9 +1994,9 @@ function ocrActionHint(verdict) {
     return '<div class="ocr-action-hint ocr-action-hint--prompt">Tune the extraction prompt for this field</div>';
   }
   if (verdict === "OCR_LIMITATION") {
-    return "<div class=\"ocr-action-hint ocr-action-hint--ocr\">OCR did not capture this. Prompt tuning won't fix it.</div>";
+    return "<div class=\"ocr-action-hint ocr-action-hint--ocr\">OCR did not capture this. Prompt changes will not fix it.</div>";
   }
-  return "";
+  return '<div class="ocr-action-hint ocr-action-hint--uncertain">Needs manual review of the source document</div>';
 }
 
 function renderOcrAccordion(result) {
@@ -1677,14 +2006,18 @@ function renderOcrAccordion(result) {
   const verdictClass = verdict.toLowerCase();
   const badgeClass = verdict === "PROMPT_PROBLEM" ? "badge--warning" : verdict === "OCR_LIMITATION" ? "badge--error" : "badge--muted";
   const verdictLabel = verdict === "UNCERTAIN" ? "UNCERTAIN — needs manual review" : verdict.replaceAll("_", " ");
+  const occurrences = Number(search.occurrence_count || 0);
+  const pagesSearched = Number(search.search_results?.pages_searched || 0);
+  const pagesLine = pagesSearched > 1 ? `<small>Searched ${pagesSearched} pages</small>` : "";
   return `
     <details class="ocr-accordion ocr-accordion--${verdictClass}">
       <summary>
         <span class="badge ${badgeClass}">${escapeHtml(verdictLabel)}</span>
         OCR diagnosis
       </summary>
-      <p>${escapeHtml(search.reason || "-")}</p>
-      <small>Found ${Number(search.occurrence_count || 0)} times in OCR markdown</small>
+      <p class="ocr-diagnosis-reason">${escapeHtml(search.reason || "-")}</p>
+      <small>Found in OCR: ${occurrences} time(s)</small>
+      ${pagesLine}
       ${ocrActionHint(verdict)}
     </details>
   `;
@@ -1903,27 +2236,10 @@ function wireSidePanelTabs() {
   });
 }
 
-function wireJsonPreview() {
-  els.jsonPreviewDocType.addEventListener("input", () => {
-    validateNameInput(els.jsonPreviewDocType);
-    renderJsonPreview();
-  });
-  els.jsonPreviewCopyButton.addEventListener("click", async () => {
-    if (els.jsonPreviewOutput.classList.contains("hidden")) return;
-    try {
-      await navigator.clipboard.writeText(els.jsonPreviewOutput.textContent);
-      showToast("Copied JSON to clipboard");
-    } catch (error) {
-      showToast("Could not copy JSON to clipboard");
-    }
-  });
-}
-
 function wireEvaluationForm() {
   createFieldRow("simple");
   wireAddFieldChips();
   wireSidePanelTabs();
-  wireJsonPreview();
   wireSchemaImport();
   els.loadFieldsButton.addEventListener("click", loadRunFields);
   els.evalForm.addEventListener("submit", runEvaluation);

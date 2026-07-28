@@ -23,7 +23,13 @@ class Settings:
     azure_openai_region: str
     azure_openai_deployment: str
     azure_openai_api_version: str
+    azure_openai_api_key: str
+    """Optional. Lets the LLM judge authenticate to Azure OpenAI with an API key
+    instead of Azure AD (DefaultAzureCredential)."""
     azure_auth_method: str
+    openai_api_key: str
+    """Optional. LLM judge falls back to public OpenAI with this key when Azure is not key-configured."""
+    openai_model: str
     gds_path: str
     """Deprecated: only used by the unused golden_loader module. Optional, defaults to empty string."""
     results_path: str
@@ -36,6 +42,16 @@ class Settings:
             and self.azure_openai_deployment
             and self.azure_openai_api_version
         )
+
+    @property
+    def azure_openai_key_configured(self) -> bool:
+        """Return True when the LLM judge can reach Azure OpenAI via an API key."""
+        return bool(self.azure_openai_api_key and self.azure_openai_configured)
+
+    @property
+    def llm_judge_configured(self) -> bool:
+        """Return True when the LLM judge can authenticate via Azure OpenAI or public OpenAI."""
+        return bool(self.azure_openai_key_configured or self.openai_api_key)
 
 
 def _required_env(name: str) -> str:
@@ -71,7 +87,10 @@ def get_settings() -> Settings:
         azure_openai_region=_optional_env("AZURE_OPENAI_REGION"),
         azure_openai_deployment=_optional_env("AZURE_OPENAI_DEPLOYMENT"),
         azure_openai_api_version=_optional_env("AZURE_OPENAI_API_VERSION"),
+        azure_openai_api_key=_optional_env("AZURE_OPENAI_API_KEY"),
         azure_auth_method=_optional_env("AZURE_AUTH_METHOD") or "default_credential",
+        openai_api_key=_optional_env("OPENAI_API_KEY"),
+        openai_model=_optional_env("OPENAI_MODEL") or "gpt-4-1106-preview",
         gds_path=_optional_env("GDS_PATH"),
         results_path=_required_env("RESULTS_PATH"),
     )

@@ -19,8 +19,15 @@ from backend.api_client import extract_ocr_fields, get_run_steps, get_run_steps_
 from backend.auth import get_bearer_token
 from backend.cleaner import clean_ocr_markdown
 from backend.config import get_settings
-from backend.evaluator import llm_ocr_searcher, llm_semantic_judge, run_field_comparison
-from backend.field_entry_validator import infer_field_type, sanitize_field_value, validate_field_name
+from backend.evaluator import (
+    calculate_f1,
+    llm_ocr_searcher,
+    resolve_grey_and_failed_with_judge,
+    resolve_line_item_grey_cells,
+    resolve_scalar_list_grey_items,
+    run_field_comparison,
+)
+from backend.field_entry_validator import sanitize_field_value, validate_field_name
 from backend.normalizer import normalize_keys_to_camel
 from backend.report import save_report
 
@@ -78,6 +85,18 @@ def on_startup() -> None:
         settings = get_settings()
         if not settings.azure_openai_configured:
             logger.warning("Azure OpenAI judge is not fully configured.")
+        if settings.azure_openai_key_configured:
+            logger.info(
+                "LLM judge configured via Azure OpenAI — deployment: %s", settings.azure_openai_deployment
+            )
+        elif settings.openai_api_key:
+            logger.info("LLM judge configured via public OpenAI — model: %s", settings.openai_model)
+        else:
+            logger.warning(
+                "No OpenAI provider configured — LLM judge will be skipped. "
+                "Set AZURE_OPENAI_API_KEY (with endpoint/deployment/version) or OPENAI_API_KEY. "
+                "Grey and failed fields will remain unresolved."
+            )
     except RuntimeError as exc:
         logger.warning("Startup configuration check failed: %s", exc)
     for env_name in ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_API_VERSION"):
@@ -308,6 +327,7 @@ def _validate_and_sanitize_golden_fields(golden_fields: dict[str, Any]) -> dict[
         )
 
     sanitized: dict[str, Any] = {}
+    seen_names: set[str] = set()
     for field, value in golden_fields.items():
         validation = validate_field_name(field)
         if not validation["valid"]:
@@ -315,62 +335,37 @@ def _validate_and_sanitize_golden_fields(golden_fields: dict[str, Any]) -> dict[
                 status_code=400,
                 detail={"field": field, "message": validation["error"]},
             )
+        normalized_name = str(field).strip()
+        if normalized_name in seen_names:
+            raise HTTPException(
+                status_code=400,
+                detail={"field": field, "message": f"Duplicate field name: {normalized_name}"},
+            )
+        seen_names.add(normalized_name)
+
         if _is_scalar_list_value(value):
-            sanitized[str(field).strip()] = _sanitize_scalar_list(value)
+            sanitized[normalized_name] = _sanitize_scalar_list(value)
         elif isinstance(value, list):
-            sanitized[str(field).strip()] = _sanitize_table_rows(value)
+            sanitized[normalized_name] = _sanitize_table_rows(value)
         else:
-            sanitized[str(field).strip()] = sanitize_field_value(value)
+            sanitized[normalized_name] = sanitize_field_value(value)
     return sanitized
 
 
-def _calculate_f1(results: dict[str, dict[str, Any]]) -> dict[str, float | int]:
-    """Calculate precision, recall, and F1 from new field statuses.
-
-    Fields with status PRESENT or ABSENT (empty golden value, existence-only
-    check) are informational and excluded from the tp/fp/fn accuracy counts.
-    """
-    tp = 0
-    fp = 0
-    fn = 0
-    informational_fields = 0
-    for result in results.values():
-        if result.get("status") in ("PRESENT", "ABSENT"):
-            informational_fields += 1
-            continue
-        line_items = result.get("line_items")
-        if isinstance(line_items, dict) and isinstance(line_items.get("f1_counts"), dict):
-            counts = line_items["f1_counts"]
-            tp += int(counts.get("tp", 0) or 0)
-            fp += int(counts.get("fp", 0) or 0)
-            fn += int(counts.get("fn", 0) or 0)
-            continue
-        scalar_list = result.get("scalar_list")
-        if isinstance(scalar_list, dict) and isinstance(scalar_list.get("f1_counts"), dict):
-            counts = scalar_list["f1_counts"]
-            tp += int(counts.get("tp", 0) or 0)
-            fp += int(counts.get("fp", 0) or 0)
-            fn += int(counts.get("fn", 0) or 0)
-            continue
-        tp += 1 if result.get("status") == "TP" else 0
-        fp += 1 if result.get("status") in ("FP", "EXTRA") else 0
-        fn += 1 if result.get("status") == "FN" else 0
-    precision = tp / (tp + fp) if tp + fp else 0.0
-    recall = tp / (tp + fn) if tp + fn else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-    return {
-        "tp": tp,
-        "fp": fp,
-        "fn": fn,
-        "precision": round(precision, 4),
-        "recall": round(recall, 4),
-        "f1": round(f1, 4),
-        "informational_fields": informational_fields,
-    }
+def _status_bucket(status: Any) -> str:
+    """Bucket a field/row status into passed/failed/missing/uncertain, mirroring the frontend's grouping."""
+    normalized = str(status or "").upper()
+    if normalized in {"TP", "PASS"}:
+        return "passed"
+    if normalized in {"FP", "FAIL", "EXTRA", "PARTIAL"}:
+        return "failed"
+    if normalized in {"FN", "MISSING"}:
+        return "missing"
+    return "uncertain"
 
 
 def _recommended_actions(results: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
-    """Build recommended actions from OCR root-cause diagnoses."""
+    """Build recommended actions from OCR searcher verdicts, prompt-tuning fixes sorted first."""
     actions: list[dict[str, str]] = []
     for field_name, result in results.items():
         ocr_search = result.get("ocr_search")
@@ -379,9 +374,11 @@ def _recommended_actions(results: dict[str, dict[str, Any]]) -> list[dict[str, s
             actions.append(
                 {
                     "field": field_name,
+                    "type": "prompt_fix",
+                    "badge": "PROMPT FIX",
                     "action": (
-                        f"Tune the extraction prompt or YAML schema to correctly pick up {field_name}. "
-                        "The value exists in the OCR output."
+                        f"'{field_name}' is in the OCR output but was not extracted correctly. "
+                        "Tune the extraction prompt or YAML schema to capture this field."
                     ),
                 }
             )
@@ -389,49 +386,122 @@ def _recommended_actions(results: dict[str, dict[str, Any]]) -> list[dict[str, s
             actions.append(
                 {
                     "field": field_name,
+                    "type": "ocr_limitation",
+                    "badge": "OCR LIMIT",
                     "action": (
-                        f"OCR did not extract {field_name}. This cannot be fixed via prompt tuning. "
-                        "Consider pre-processing or document quality improvements."
+                        f"'{field_name}' was not found in the OCR output. This cannot be fixed by "
+                        "prompt tuning — the OCR engine did not extract this content from the document."
                     ),
                 }
             )
-        elif result.get("status") in {"FN", "PARTIAL"} and not ocr_search:
+        elif verdict == "UNCERTAIN":
             actions.append(
                 {
                     "field": field_name,
-                    "action": f"{field_name} was missing from extraction output. Run OCR search to diagnose root cause.",
+                    "type": "investigate",
+                    "badge": "INVESTIGATE",
+                    "action": (
+                        f"'{field_name}' diagnosis was inconclusive. "
+                        "Manually check the OCR output for this field."
+                    ),
                 }
             )
+        elif result.get("status") in {"FN", "FAIL", "PARTIAL"} and not ocr_search:
+            actions.append(
+                {
+                    "field": field_name,
+                    "type": "investigate",
+                    "badge": "INVESTIGATE",
+                    "action": (
+                        f"'{field_name}' was flagged for OCR search but has not been diagnosed. "
+                        "Run OCR search to determine if this is a prompt or OCR issue."
+                    ),
+                }
+            )
+    action_order = {"prompt_fix": 0, "ocr_limitation": 1, "investigate": 2}
+    actions.sort(key=lambda action: action_order.get(action.get("type", ""), 3))
     return actions
 
 
-def _summarize_report(results: dict[str, dict[str, Any]]) -> dict[str, int]:
-    """Summarize field outcomes and diagnostic categories."""
-    uncertain_resolved = sum(1 for result in results.values() if isinstance(result.get("llm_judge"), dict))
-    prompt_problems = sum(
-        1
-        for result in results.values()
-        if isinstance(result.get("ocr_search"), dict)
-        and result["ocr_search"].get("verdict") == "PROMPT_PROBLEM"
-    )
-    ocr_limitations = sum(
-        1
-        for result in results.values()
-        if isinstance(result.get("ocr_search"), dict)
-        and result["ocr_search"].get("verdict") == "OCR_LIMITATION"
-    )
-    uncertain_unresolved = sum(1 for result in results.values() if result.get("status") == "GREY_UNRESOLVED")
-    informational = sum(1 for result in results.values() if result.get("status") in ("PRESENT", "ABSENT"))
+def _summarize_comparison(results: dict[str, dict[str, Any]]) -> dict[str, int]:
+    """Summarize field outcomes and diagnostic categories for the evaluation report."""
+    passed = failed = missing = extra_fields = 0
+    uncertain_resolved = 0
+    grey_unresolved = 0
+    prompt_problems = 0
+    ocr_limitations = 0
+
+    for result in results.values():
+        status = result.get("status")
+        bucket = _status_bucket(status)
+        if bucket == "passed":
+            passed += 1
+        elif bucket == "failed":
+            failed += 1
+        elif bucket == "missing":
+            missing += 1
+        if status == "EXTRA":
+            extra_fields += 1
+        if status == "GREY_UNRESOLVED":
+            grey_unresolved += 1
+        if isinstance(result.get("llm_judge"), dict):
+            uncertain_resolved += 1
+        ocr_search = result.get("ocr_search")
+        if isinstance(ocr_search, dict):
+            if ocr_search.get("verdict") == "PROMPT_PROBLEM":
+                prompt_problems += 1
+            elif ocr_search.get("verdict") == "OCR_LIMITATION":
+                ocr_limitations += 1
+
     return {
         "total_fields": len(results),
-        "passed": sum(1 for result in results.values() if result.get("status") == "TP"),
-        "failed": sum(1 for result in results.values() if result.get("status") in ("FP", "EXTRA", "PARTIAL")),
-        "missing": sum(1 for result in results.values() if result.get("status") == "FN"),
+        "passed": passed,
+        "failed": failed,
+        "missing": missing,
         "uncertain_resolved": uncertain_resolved,
-        "uncertain_unresolved": uncertain_unresolved,
+        "grey_unresolved": grey_unresolved,
         "prompt_problems": prompt_problems,
         "ocr_limitations": ocr_limitations,
-        "informational_fields": informational,
+        "extra_fields": extra_fields,
+    }
+
+
+def _judge_stats(field_results: dict[str, dict[str, Any]], judge_skipped: bool) -> dict[str, Any]:
+    """Summarize LLM judge outcomes across top-level fields and line-item/scalar-list cells for the report."""
+    evaluated = 0
+    resolved_pass = 0
+    resolved_fail = 0
+    unresolved = 0
+
+    def _tally(judge: Any, status: Any) -> None:
+        nonlocal evaluated, resolved_pass, resolved_fail, unresolved
+        if not isinstance(judge, dict):
+            return
+        evaluated += 1
+        verdict = judge.get("verdict")
+        if verdict == "PASS":
+            resolved_pass += 1
+        elif verdict == "FAIL":
+            resolved_fail += 1
+        elif status == "GREY_UNRESOLVED":
+            unresolved += 1
+
+    for result in field_results.values():
+        _tally(result.get("llm_judge"), result.get("status"))
+        if result.get("field_type") == "line_items":
+            for row in result.get("row_results", []):
+                for cell in row.get("column_results", {}).values():
+                    _tally(cell.get("llm_judge"), cell.get("status"))
+        elif result.get("field_type") == "scalar_list":
+            for item in result.get("item_results", []):
+                _tally(item.get("llm_judge"), item.get("status"))
+
+    return {
+        "fields_evaluated_by_judge": evaluated,
+        "resolved_as_pass": resolved_pass,
+        "resolved_as_fail": resolved_fail,
+        "unresolved": unresolved,
+        "judge_skipped": judge_skipped,
     }
 
 
@@ -442,38 +512,78 @@ def run_ocr_eval(run_id: str, golden_fields: dict[str, Any], eval_type: str = "f
         ocr_markdown = clean_ocr_markdown(run_data["ocr_markdown"])
         document_type, extracted_fields, warning, extraction_warning = _extract_fields_from_run(run_data)
         sanitized_golden = _validate_and_sanitize_golden_fields(golden_fields)
-        field_types = {field: infer_field_type(field) for field in sanitized_golden}
-        results = run_field_comparison(sanitized_golden, extracted_fields, field_types)
+        comparison = run_field_comparison(sanitized_golden, extracted_fields)
+        field_results = comparison["field_results"]
+        aggregate = comparison["aggregate"]
 
-        grey_fields = [field for field, result in results.items() if result["status"] == "GREY"]
-        for field in grey_fields:
-            judge_result = llm_semantic_judge(
-                field,
-                results[field]["golden_value"],
-                results[field]["extracted_value"],
-                results[field]["field_type"],
-            )
-            if judge_result["verdict"] == "PASS":
-                results[field]["status"] = "TP"
-            elif judge_result["verdict"] == "FAIL":
-                results[field]["status"] = "FP"
-            else:
-                results[field]["status"] = "GREY_UNRESOLVED"
-            results[field]["llm_judge"] = judge_result
+        # ── LLM JUDGE STEP ──────────────────────────────────────
+        # Only GREY and FP fields go here.
+        # TP fields are already decided — do not re-evaluate them.
+        # FN fields have no extracted value — skip judge, go to searcher.
+        grey_count = aggregate.get("grey", 0)
+        fp_count = aggregate.get("fp", 0)
 
-        failed_fields = [
-            field
-            for field, result in results.items()
-            if result["status"] in ("FP", "FN", "PARTIAL") and result["golden_value"] != ""
+        if grey_count > 0 or fp_count > 0:
+            logger.info("Sending %s GREY and %s FP fields to LLM judge", grey_count, fp_count)
+            field_results, aggregate = resolve_grey_and_failed_with_judge(field_results, aggregate)
+            field_results, aggregate = resolve_line_item_grey_cells(field_results, aggregate)
+            field_results, aggregate = resolve_scalar_list_grey_items(field_results, aggregate)
+        else:
+            logger.info("No GREY or FP fields — LLM judge step skipped")
+
+        comparison["aggregate"] = aggregate
+
+        # Recalculate F1 after judge resolutions
+        f1_scores = calculate_f1(aggregate)
+
+        # ── OCR SEARCHER STEP ───────────────────────────────────
+        # Diagnose fields that still need root-cause analysis:
+        # FP fields (judge confirmed fail or no judge available)
+        # FN fields (missing entirely — skip judge, go straight here)
+        # GREY_UNRESOLVED fields (judge could not decide)
+        # Line items and scalar lists are excluded — their values are not a
+        # single searchable string.
+        fields_for_searcher = [
+            field_name
+            for field_name, result in field_results.items()
+            if result.get("status") in ("FP", "FN", "GREY_UNRESOLVED")
+            and result.get("golden_value", "") != ""
+            and result.get("field_type") not in ("line_items", "scalar_list")
         ]
-        for field in failed_fields:
-            results[field]["ocr_search"] = llm_ocr_searcher(
-                field,
-                results[field]["golden_value"],
-                ocr_markdown,
-            )
+        logger.info("Fields queued for OCR searcher: %s", fields_for_searcher)
 
-        f1_scores = _calculate_f1(results)
+        if not ocr_markdown or not ocr_markdown.strip():
+            logger.warning("OCR markdown not available — searcher skipped")
+            for field_name in fields_for_searcher:
+                field_result = field_results.get(field_name)
+                if field_result is None:
+                    continue
+                field_result["ocr_search"] = {
+                    "verdict": "UNCERTAIN",
+                    "reason": "OCR markdown not available for this run.",
+                    "occurrence_count": 0,
+                    "note": "no_ocr_markdown",
+                    "llm_called": False,
+                    "llm_error": False,
+                }
+        else:
+            for field_name in fields_for_searcher:
+                field_result = field_results.get(field_name)
+                if field_result is None:
+                    continue
+                golden_val = field_result.get("golden_value", "")
+                field_type = field_result.get("field_type", "text")
+                if not isinstance(golden_val, str) or golden_val.strip() == "":
+                    logger.debug("Skipping OCR search for '%s' — empty golden value", field_name)
+                    continue
+                if field_type == "line_items":
+                    logger.debug("Skipping OCR search for '%s' — line items handled separately", field_name)
+                    continue
+                logger.info("OCR searcher running for field: '%s'", field_name)
+                field_result["ocr_search"] = llm_ocr_searcher(field_name, golden_val, ocr_markdown, field_type)
+
+        # ── BUILD REPORT ────────────────────────────────────────
+        settings = get_settings()
         timestamp = datetime.now(timezone.utc).isoformat()
         report: dict[str, Any] = {
             "run_id": run_id,
@@ -482,11 +592,13 @@ def run_ocr_eval(run_id: str, golden_fields: dict[str, Any], eval_type: str = "f
             "timestamp": timestamp,
             "eval_type": eval_type,
             "golden_fields_entered": sanitized_golden,
-            "field_comparison": results,
+            "field_comparison": field_results,
             "f1_scores": f1_scores,
             "evals_report": f1_scores,
-            "recommended_actions": _recommended_actions(results),
-            "summary": _summarize_report(results),
+            "recommended_actions": _recommended_actions(field_results),
+            "summary": _summarize_comparison(field_results),
+            "judge_stats": _judge_stats(field_results, judge_skipped=not settings.llm_judge_configured),
+            "fields_pending_ocr_search": fields_for_searcher,
         }
         run_warnings: list[str] = []
         if warning:
@@ -712,6 +824,11 @@ def _accumulate_field_f1_counts(reports: list[dict[str, Any]]) -> dict[str, dict
             if not isinstance(result, dict):
                 continue
             counts = per_field_counts.setdefault(field_name, {"tp": 0, "fp": 0, "fn": 0})
+            if result.get("field_type") in ("line_items", "scalar_list") and "tp_count" in result:
+                counts["tp"] += int(result.get("tp_count", 0) or 0)
+                counts["fp"] += int(result.get("fp_count", 0) or 0)
+                counts["fn"] += int(result.get("fn_count", 0) or 0)
+                continue
             line_items = result.get("line_items")
             if isinstance(line_items, dict) and isinstance(line_items.get("f1_counts"), dict):
                 f1_counts = line_items["f1_counts"]
@@ -727,9 +844,9 @@ def _accumulate_field_f1_counts(reports: list[dict[str, Any]]) -> dict[str, dict
                 counts["fn"] += int(f1_counts.get("fn", 0) or 0)
                 continue
             status = result.get("status")
-            if status == "TP":
+            if status in ("TP", "PASS"):
                 counts["tp"] += 1
-            elif status in ("FP", "EXTRA"):
+            elif status in ("FP", "EXTRA", "FAIL"):
                 counts["fp"] += 1
             elif status == "FN":
                 counts["fn"] += 1

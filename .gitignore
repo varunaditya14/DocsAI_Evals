@@ -25,7 +25,6 @@ yarn-debug.log*
 yarn-error.log*
 
 # Generated app data
-data/*
 results/*
 !data/.gitkeep
 !results/.gitkeep

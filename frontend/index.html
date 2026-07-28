@@ -159,6 +159,22 @@
                 </div>
               </section>
 
+              <section class="card" id="schema-import-card">
+                <header class="card__header">
+                  <h2 class="card__title">Import JSON schema</h2>
+                  <span class="card__hint">Paste a full template to auto-generate fields</span>
+                </header>
+                <div class="card__body">
+                  <textarea id="schema-import-input" class="textarea-input schema-import-textarea" placeholder="Paste your complete JSON schema here..."></textarea>
+                  <div class="schema-import-actions">
+                    <button id="schema-import-parse-button" class="btn btn--secondary" type="button">Parse schema</button>
+                  </div>
+                  <div id="schema-import-error" class="banner banner--error hidden"></div>
+
+                  <div id="schema-import-generated" class="schema-generated hidden"></div>
+                </div>
+              </section>
+
               <form id="eval-form" class="card">
                 <header class="card__header">
                   <h2 class="card__title">Expected field values</h2>
@@ -189,23 +205,6 @@
                   <button id="run-eval-button" class="btn btn--primary btn--full" type="submit" disabled>Run evaluation</button>
                 </div>
               </form>
-
-              <section class="card" id="schema-import-card">
-                <header class="card__header">
-                  <h2 class="card__title">Import JSON schema</h2>
-                  <span class="card__hint">Paste a full template to auto-generate fields</span>
-                </header>
-                <div class="card__body">
-                  <textarea id="schema-import-input" class="textarea-input schema-import-textarea" placeholder="Paste your complete JSON schema here..."></textarea>
-                  <div class="schema-import-actions">
-                    <button id="schema-import-parse-button" class="btn btn--secondary" type="button">Parse schema</button>
-                  </div>
-                  <div id="schema-import-error" class="banner banner--error hidden"></div>
-
-                  <nav id="schema-import-doctypes" class="tab-bar hidden" aria-label="Detected document types"></nav>
-                  <div id="schema-import-generated" class="schema-generated hidden"></div>
-                </div>
-              </section>
             </div>
           </div>
 
@@ -216,13 +215,6 @@
             </nav>
 
             <div data-side-panel="json" class="side-panel-content">
-              <div id="json-preview-doctype-head" class="json-preview-head">
-                <label class="form-label" for="json-preview-doctype">Document type key</label>
-                <input id="json-preview-doctype" type="text" class="text-input" placeholder="documentType" autocomplete="off" />
-              </div>
-              <div class="json-preview-actions">
-                <button id="json-preview-copy-button" class="btn btn--secondary btn--small" type="button">Copy</button>
-              </div>
               <pre id="json-preview-output" class="json-preview hidden"></pre>
               <p id="json-preview-empty" class="result-insights__empty">Add fields to see the JSON preview</p>
             </div>
@@ -389,6 +381,20 @@
     </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <div id="confirm-dialog" class="modal-overlay hidden">
+      <div class="modal-scroll confirm-dialog-scroll">
+        <section class="modal-card confirm-dialog-card" role="alertdialog" aria-modal="true" aria-labelledby="confirm-dialog-message">
+          <div class="confirm-dialog-body">
+            <p id="confirm-dialog-message"></p>
+          </div>
+          <div class="confirm-dialog-actions">
+            <button id="confirm-dialog-cancel" class="btn btn--secondary" type="button">Cancel</button>
+            <button id="confirm-dialog-ok" class="btn btn--primary" type="button">OK</button>
+          </div>
+        </section>
+      </div>
+    </div>
 
     <div id="report-modal" class="modal-overlay hidden">
       <div class="modal-scroll">
