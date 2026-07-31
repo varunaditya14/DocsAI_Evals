@@ -15,7 +15,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from backend.api_client import extract_ocr_fields, get_run_steps, get_run_steps_debug
+from backend.api_client import (
+    extract_ocr_fields,
+    extract_ocr_fields_by_doctype,
+    get_run_steps,
+    get_run_steps_debug,
+)
 from backend.auth import get_bearer_token
 from backend.cleaner import clean_ocr_markdown
 from backend.config import get_settings
@@ -318,14 +323,22 @@ def _sanitize_scalar_list(values: list[Any]) -> list[str]:
     return [sanitize_field_value(value) for value in values]
 
 
-def _validate_and_sanitize_golden_fields(golden_fields: dict[str, Any]) -> dict[str, Any]:
-    """Validate user-entered fields and return sanitized scalar, list, or table values."""
-    if not isinstance(golden_fields, dict) or not golden_fields:
-        raise HTTPException(
-            status_code=400,
-            detail="No fields entered. Add at least one expected field value to run evaluation.",
-        )
+def _is_doctype_grouped_golden(golden_fields: dict[str, Any]) -> bool:
+    """True when golden fields are grouped per document type.
 
+    Grouped payloads map each document type to its own field dict, e.g.
+    {"taxInvoice": {...}, "purchaseOrder": {...}}. A flat payload maps field
+    names straight to scalar/list values, so any dict-valued entry means the
+    caller sent the grouped shape.
+    """
+    return bool(golden_fields) and all(isinstance(value, dict) for value in golden_fields.values())
+
+
+def _sanitize_golden_field_group(
+    golden_fields: dict[str, Any],
+    error_prefix: str = "",
+) -> dict[str, Any]:
+    """Validate and sanitize one flat group of field-name -> value entries."""
     sanitized: dict[str, Any] = {}
     seen_names: set[str] = set()
     for field, value in golden_fields.items():
@@ -333,13 +346,16 @@ def _validate_and_sanitize_golden_fields(golden_fields: dict[str, Any]) -> dict[
         if not validation["valid"]:
             raise HTTPException(
                 status_code=400,
-                detail={"field": field, "message": validation["error"]},
+                detail={"field": f"{error_prefix}{field}", "message": validation["error"]},
             )
         normalized_name = str(field).strip()
         if normalized_name in seen_names:
             raise HTTPException(
                 status_code=400,
-                detail={"field": field, "message": f"Duplicate field name: {normalized_name}"},
+                detail={
+                    "field": f"{error_prefix}{field}",
+                    "message": f"Duplicate field name: {normalized_name}",
+                },
             )
         seen_names.add(normalized_name)
 
@@ -350,6 +366,39 @@ def _validate_and_sanitize_golden_fields(golden_fields: dict[str, Any]) -> dict[
         else:
             sanitized[normalized_name] = sanitize_field_value(value)
     return sanitized
+
+
+def _validate_and_sanitize_golden_fields(golden_fields: dict[str, Any]) -> dict[str, Any]:
+    """Validate user-entered fields, accepting flat or per-doctype grouped input.
+
+    Returns the same shape it was given: a flat field map stays flat, while a
+    per-doctype map stays grouped so each document type is compared against its
+    own extracted fields.
+    """
+    if not isinstance(golden_fields, dict) or not golden_fields:
+        raise HTTPException(
+            status_code=400,
+            detail="No fields entered. Add at least one expected field value to run evaluation.",
+        )
+
+    if not _is_doctype_grouped_golden(golden_fields):
+        return _sanitize_golden_field_group(golden_fields)
+
+    grouped: dict[str, Any] = {}
+    for doctype, fields in golden_fields.items():
+        validation = validate_field_name(doctype)
+        if not validation["valid"]:
+            raise HTTPException(
+                status_code=400,
+                detail={"field": doctype, "message": validation["error"]},
+            )
+        grouped[str(doctype).strip()] = _sanitize_golden_field_group(fields, f"{doctype}.")
+    if not any(fields for fields in grouped.values()):
+        raise HTTPException(
+            status_code=400,
+            detail="No fields entered. Add at least one expected field value to run evaluation.",
+        )
+    return grouped
 
 
 def _status_bucket(status: Any) -> str:
@@ -505,6 +554,53 @@ def _judge_stats(field_results: dict[str, dict[str, Any]], judge_skipped: bool) 
     }
 
 
+def _run_grouped_field_comparison(
+    grouped_golden: dict[str, Any],
+    llm_output: Any,
+) -> dict[str, Any]:
+    """Compare each document type against its own extracted fields.
+
+    Runs the normal flat comparison once per document type, then merges the
+    per-doctype results into a single field_results map keyed "doctype.field".
+    Keeping the merged map flat lets the judge, OCR searcher and F1 steps run
+    unchanged, while still scoring each document type independently.
+    """
+    extracted_by_doctype = extract_ocr_fields_by_doctype(llm_output)
+    merged_results: dict[str, Any] = {}
+    totals = {"tp": 0, "fp": 0, "fn": 0, "grey": 0, "extra": 0, "informational": 0}
+    grey_fields: list[str] = []
+    total_extracted = 0
+
+    for doctype, golden_group in grouped_golden.items():
+        if not golden_group:
+            continue
+        extracted_group = extracted_by_doctype.get(doctype)
+        if extracted_group is None:
+            logger.warning(
+                "Golden fields provided for document type '%s' but the run has no such document; "
+                "its fields will be reported as missing.",
+                doctype,
+            )
+            extracted_group = {}
+        total_extracted += len(extracted_group)
+        comparison = run_field_comparison(golden_group, extracted_group)
+        for field_name, result in comparison["field_results"].items():
+            result["document_type"] = doctype
+            merged_results[f"{doctype}.{field_name}"] = result
+        for key in totals:
+            totals[key] += comparison["aggregate"].get(key, 0)
+        grey_fields.extend(f"{doctype}.{name}" for name in comparison.get("grey_fields", []))
+
+    return {
+        "field_results": merged_results,
+        "aggregate": totals,
+        "grey_fields": grey_fields,
+        "total_golden_fields": sum(len(group) for group in grouped_golden.values()),
+        "total_extracted_fields": total_extracted,
+        "grouped_by_document_type": True,
+    }
+
+
 def run_ocr_eval(run_id: str, golden_fields: dict[str, Any], eval_type: str = "full") -> dict[str, Any]:
     """Run the field-entry evaluation workflow for a DocsAI run."""
     try:
@@ -512,7 +608,10 @@ def run_ocr_eval(run_id: str, golden_fields: dict[str, Any], eval_type: str = "f
         ocr_markdown = clean_ocr_markdown(run_data["ocr_markdown"])
         document_type, extracted_fields, warning, extraction_warning = _extract_fields_from_run(run_data)
         sanitized_golden = _validate_and_sanitize_golden_fields(golden_fields)
-        comparison = run_field_comparison(sanitized_golden, extracted_fields)
+        if _is_doctype_grouped_golden(sanitized_golden):
+            comparison = _run_grouped_field_comparison(sanitized_golden, run_data.get("llm_output"))
+        else:
+            comparison = run_field_comparison(sanitized_golden, extracted_fields)
         field_results = comparison["field_results"]
         aggregate = comparison["aggregate"]
 

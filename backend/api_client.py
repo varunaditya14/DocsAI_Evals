@@ -15,12 +15,21 @@ from backend.normalizer import normalize_keys_to_camel, to_camel_case
 
 
 OCR_STEP_TYPE = "convert_text_from_document_using_mistral_ocr"
+# Envelope/metadata keys that are never a document type. Document-type keys
+# (taxInvoice, purchaseOrder, proformaInvoice, ...) are deliberately NOT listed
+# here: extract_ocr_fields_by_doctype returns every one of them so each can be
+# evaluated against its own golden fields.
 SKIP_EXTRACTION_KEYS = {
     "extractionConfidence",
-    "purchaseOrder",
-    "proformaInvoice",
     "documentType",
     "success",
+}
+# Legacy single-doctype extraction (extract_ocr_fields) historically returned
+# only the first document list and ignored these. Kept so that flat, un-grouped
+# golden fields keep scoring exactly as they did before.
+LEGACY_SINGLE_DOCTYPE_SKIP_KEYS = SKIP_EXTRACTION_KEYS | {
+    "purchaseOrder",
+    "proformaInvoice",
 }
 CLASSIFICATION_KEYS = {
     "fileId",
@@ -91,21 +100,47 @@ def _is_classification_record(value: Any) -> bool:
     return bool(set(normalized_value) & CLASSIFICATION_KEYS)
 
 
-def _first_non_empty_document_list(value: Any) -> tuple[str, list[Any]]:
+def _first_non_empty_document_list(
+    value: Any,
+    skip_keys: set[str] | None = None,
+) -> tuple[str, list[Any]]:
     """Return the first non-classification document list from a DocsAI payload."""
+    skip = LEGACY_SINGLE_DOCTYPE_SKIP_KEYS if skip_keys is None else skip_keys
     mapping = _document_values_from_mapping(value)
     for key, item in mapping.items():
-        if key in SKIP_EXTRACTION_KEYS or key == "lineItems":
+        if key in skip or key == "lineItems":
             continue
         if isinstance(item, list) and item:
             if _is_classification_record(item[0]):
                 continue
             return str(key), item
         if isinstance(item, dict):
-            nested_key, nested_items = _first_non_empty_document_list(item)
+            nested_key, nested_items = _first_non_empty_document_list(item, skip)
             if nested_items:
                 return nested_key, nested_items
     return "", []
+
+
+def _all_document_lists(value: Any) -> dict[str, list[Any]]:
+    """Return every document-type list in a DocsAI payload, keyed by doctype.
+
+    Unlike _first_non_empty_document_list this does not stop at the first match
+    and does not skip purchaseOrder/proformaInvoice, so each document type can
+    be compared against its own golden fields.
+    """
+    mapping = _document_values_from_mapping(value)
+    documents: dict[str, list[Any]] = {}
+    for key, item in mapping.items():
+        if key in SKIP_EXTRACTION_KEYS or key == "lineItems":
+            continue
+        if isinstance(item, list):
+            if item and _is_classification_record(item[0]):
+                continue
+            documents[str(key)] = item
+        elif isinstance(item, dict):
+            for nested_key, nested_items in _all_document_lists(item).items():
+                documents.setdefault(nested_key, nested_items)
+    return documents
 
 
 def _contains_extraction_document_key(value: Any) -> bool:
@@ -229,6 +264,66 @@ def extract_ocr_fields(llm_output: Any, document_type: str) -> dict[str, Any]:
         return {}
 
     return _fields_from_document_records(document_key, records)
+
+
+def _fields_from_document_record_with_tables(record: Any) -> dict[str, Any]:
+    """Return one document record's fields, keeping nested row lists intact.
+
+    _flat_fields_from_object drops lineItems because the legacy flat path
+    compared scalars only. Per-doctype comparison needs the row lists too, so
+    table-shaped values are passed through as lists of row dicts.
+    """
+    if not isinstance(record, dict):
+        return {}
+    normalized = normalize_keys_to_camel(record)
+    fields: dict[str, Any] = {}
+    for key, value in normalized.items():
+        if isinstance(value, list) and value and all(isinstance(row, dict) for row in value):
+            fields[key] = [
+                {row_key: _stringify_field_value(row_value) for row_key, row_value in row.items()}
+                for row in value
+            ]
+        elif isinstance(value, list):
+            fields[key] = [_stringify_field_value(item) for item in value]
+        else:
+            fields[key] = _stringify_field_value(value)
+    return fields
+
+
+def extract_ocr_fields_by_doctype(llm_output: Any) -> dict[str, dict[str, Any]]:
+    """Extract fields grouped by document type, e.g. {"taxInvoice": {...}, ...}.
+
+    Each document type is returned separately so it can be scored against its
+    own golden fields, instead of collapsing every doctype into one flat map
+    where same-named fields (poNo, lineItems) would collide.
+    """
+    if llm_output is None:
+        logger.warning("LLM output is missing; per-doctype OCR fields will be empty.")
+        return {}
+
+    normalized_output = normalize_keys_to_camel(_coerce_mapping(llm_output))
+    search_root = normalized_output
+    extraction = normalized_output.get("extraction")
+    if isinstance(extraction, dict) and _all_document_lists(extraction):
+        search_root = extraction
+
+    documents = _all_document_lists(search_root)
+    if not documents:
+        logger.warning("No per-doctype LLM document data found in DocsAI output.")
+        return {}
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for doctype, records in documents.items():
+        if not records:
+            # Document type present but with no extracted record (e.g.
+            # "proformaInvoice": []). Keep the key so a golden entry for it is
+            # reported as missing rather than silently ignored.
+            grouped[doctype] = {}
+            continue
+        if len(records) > 1:
+            logger.warning("Multiple LLM records for document type %s; using the first.", doctype)
+        grouped[doctype] = _fields_from_document_record_with_tables(records[0])
+    return grouped
 
 
 def extract_llm_line_items(llm_output: Any, document_type: str) -> list[dict[str, Any]]:

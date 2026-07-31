@@ -1031,11 +1031,36 @@ h3 {
   font-size: 12px;
 }
 
+/* The run form is no longer a card of its own - the JSON editor above is the
+   only field-authoring surface, so this is just the submit affordance. */
+.run-form {
+  margin-bottom: 16px;
+}
+
 .schema-import-actions {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-top: 10px;
+}
+
+/* Apply sits at the foot of the editor - the last step after reviewing the
+   parsed tree, rather than next to Parse where it would read as an alternative
+   to it. Sticks to the bottom so it stays reachable in a long tree. */
+.schema-import-apply-row {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+
+.schema-import-apply-row.hidden {
+  display: none;
 }
 
 .schema-generated {
@@ -1068,6 +1093,248 @@ h3 {
   color: var(--warning);
   background: var(--warning-bg);
   border-color: transparent;
+}
+
+/* ---------- JSON tree editor ---------- */
+/* Depth is communicated once, by indentation + a connecting rail - not by
+   stacking a new card border at every nested level. Only an array whose items
+   are objects (line items) gets its own tinted sub-block, since that's the
+   one shape dense enough to need visual separation from its siblings. */
+
+.json-editor {
+  margin-top: 14px;
+  max-height: 520px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.json-node {
+  min-width: 0;
+  display: flex;
+}
+
+.json-node--root {
+  display: block;
+}
+
+.json-node__rail {
+  flex-shrink: 0;
+  width: 1px;
+  margin: 2px 12px 2px 7px;
+  background: var(--border);
+}
+
+.json-node__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.json-node--item-group > .json-node__body {
+  background: var(--surface-muted);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.json-node__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 22px;
+}
+
+.json-node__count {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.json-node__empty {
+  margin: 2px 0 6px;
+  color: var(--text-placeholder);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.json-node__children {
+  display: grid;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.json-node--root > .json-node__body > .json-node__children {
+  margin-top: 6px;
+  gap: 10px;
+}
+
+/* Add/remove read as text links, not buttons - so a deeply nested tree isn't
+   a wall of bordered pill buttons at every level. */
+.json-add-link,
+.json-remove-link {
+  padding: 2px 0;
+  color: var(--brand);
+  background: none;
+  border: 0;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.json-add-link:hover,
+.json-remove-link:hover {
+  text-decoration: underline;
+}
+
+.json-remove-link {
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.json-remove-link:hover {
+  color: var(--error);
+}
+
+.json-kvp {
+  display: grid;
+  grid-template-columns: minmax(110px, 210px) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 2px 0;
+}
+
+.json-kvp--container {
+  display: block;
+}
+
+.json-kvp--container .json-kvp__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 24px;
+}
+
+.json-kvp__label-group {
+  display: flex;
+  min-width: 0;
+}
+
+.json-kvp--container .json-kvp__label-group {
+  align-items: baseline;
+  gap: 8px;
+}
+
+/* The key input doubles as the field label: normal text weight/size at rest,
+   with a hover/focus affordance revealing it's editable rather than static. */
+.json-kvp__key {
+  width: 100%;
+  padding: 3px 4px;
+  margin-left: -4px;
+  overflow: hidden;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  font-size: 13px;
+  transition: background-color 120ms ease;
+}
+
+.json-kvp__key:hover {
+  background: var(--surface);
+}
+
+.json-kvp__key:focus {
+  color: var(--text);
+  background: var(--surface);
+  outline: 2px solid var(--brand-border);
+  outline-offset: -1px;
+}
+
+.json-kvp__key.is-invalid {
+  color: var(--error);
+  border-bottom-color: var(--error);
+}
+
+.json-kvp__index {
+  display: inline-block;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.json-kvp__value {
+  min-width: 0;
+}
+
+.json-leaf--string,
+.json-leaf--number {
+  width: 100%;
+  padding: 5px 9px;
+}
+
+/* Multi-line values render as a textarea so embedded newlines stay visible
+   and editable instead of collapsing into one run-together line. */
+.json-leaf--text {
+  width: 100%;
+  min-height: 0;
+  padding: 5px 9px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.json-kvp:has(.json-leaf--text) {
+  align-items: start;
+}
+
+.json-kvp:has(.json-leaf--text) .json-kvp__key {
+  margin-top: 4px;
+}
+
+.json-leaf--boolean {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+
+.json-leaf__bool {
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.json-leaf--null {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.json-null-tag {
+  padding: 2px 8px;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+  border-radius: 20px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.json-null-select {
+  padding: 3px 6px;
+  color: var(--text-secondary);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.json-kvp .remove-btn {
+  width: 22px;
+  height: 22px;
+  font-size: 15px;
 }
 
 /* ---------- Progress ---------- */

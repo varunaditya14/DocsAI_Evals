@@ -171,39 +171,36 @@
                   </div>
                   <div id="schema-import-error" class="banner banner--error hidden"></div>
 
+                  <div id="schema-import-editor" class="json-editor hidden"></div>
+
+                  <div id="schema-import-apply-row" class="schema-import-apply-row hidden">
+                    <button id="schema-import-apply-button" class="btn btn--primary" type="button">Apply</button>
+                  </div>
+
                   <div id="schema-import-generated" class="schema-generated hidden"></div>
                 </div>
               </section>
 
-              <form id="eval-form" class="card">
-                <header class="card__header">
-                  <h2 class="card__title">Expected field values</h2>
-                  <span class="card__hint">camelCase field names only</span>
-                </header>
-                <div class="card__body">
-                  <div id="field-rows" class="field-rows"></div>
-
-                  <div class="add-field-row">
-                    <span class="add-field-row__label">Add field:</span>
-                    <div class="chip-row" id="add-field-chips">
-                      <button type="button" class="chip chip--active" data-add-type="simple">Simple</button>
-                      <button type="button" class="chip" data-add-type="multiline">Multiline</button>
-                      <button type="button" class="chip" data-add-type="table">Table (line items)</button>
-                      <button type="button" class="chip" data-add-type="list">List (multi-value)</button>
-                    </div>
-                  </div>
-                  <p class="form-hint">Use Table to add repeating rows like line items - it nests as an array under the field name you give it, alongside your other fields. Use List for a field that holds several plain values (e.g. tags), not rows of columns.</p>
-
-                  <hr class="divider" />
-
-                  <div id="run-message-banner" class="banner hidden"></div>
-                  <div id="progress-indicator" class="progress-indicator hidden">
-                    <span class="spinner" aria-hidden="true"></span>
-                    <span id="progress-text">Fetching run output...</span>
-                  </div>
-
-                  <button id="run-eval-button" class="btn btn--primary btn--full" type="submit" disabled>Run evaluation</button>
+              <form id="eval-form" class="run-form">
+                <!-- The golden fields the evaluator submits still live here as
+                     field-row nodes; the JSON editor's Apply populates them.
+                     Hidden because the editor above is now the only way to
+                     author them - collectGoldenFields still reads these. -->
+                <div id="field-rows" class="field-rows hidden"></div>
+                <div class="chip-row hidden" id="add-field-chips">
+                  <button type="button" class="chip chip--active" data-add-type="simple">Simple</button>
+                  <button type="button" class="chip" data-add-type="multiline">Multiline</button>
+                  <button type="button" class="chip" data-add-type="table">Table (line items)</button>
+                  <button type="button" class="chip" data-add-type="list">List (multi-value)</button>
                 </div>
+
+                <div id="run-message-banner" class="banner hidden"></div>
+                <div id="progress-indicator" class="progress-indicator hidden">
+                  <span class="spinner" aria-hidden="true"></span>
+                  <span id="progress-text">Fetching run output...</span>
+                </div>
+
+                <button id="run-eval-button" class="btn btn--primary btn--full" type="submit" disabled>Run evaluation</button>
               </form>
             </div>
           </div>

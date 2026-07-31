@@ -31,6 +31,15 @@ const state = {
   historyPage: 1,
   historyPageSize: 6,
   progressTimer: null,
+  // Live parsed JSON being edited in the schema import card. `root` is the real
+  // object/array/scalar produced by JSON.parse - the editor reads and rewrites
+  // it directly, so the pasted text is never re-parsed while typing. `isActive`
+  // tracks whether a parse has succeeded, because `null` is itself a valid root.
+  jsonEditor: { root: undefined, isActive: false },
+  // The exact golden_fields payload Apply produced from the edited tree. This
+  // is what the JSON preview shows and what runEvaluation POSTs - there is no
+  // second, differently-shaped copy anywhere.
+  goldenFields: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -74,7 +83,10 @@ const els = {
 
   schemaImportInput: $("#schema-import-input"),
   schemaImportParseButton: $("#schema-import-parse-button"),
+  schemaImportApplyButton: $("#schema-import-apply-button"),
+  schemaImportApplyRow: $("#schema-import-apply-row"),
   schemaImportError: $("#schema-import-error"),
+  schemaImportEditor: $("#schema-import-editor"),
   schemaImportGenerated: $("#schema-import-generated"),
 
   sideTabs: $$("[data-side-tab]"),
@@ -414,22 +426,6 @@ function wireNavigation() {
 
 /* ---------- Field entry: shared ---------- */
 
-function entryNodes() {
-  return $$(".field-row, .table-block, .list-block");
-}
-
-function entryCount() {
-  return entryNodes().length;
-}
-
-function ensureEntryLimit() {
-  if (entryCount() >= MAX_FIELDS) {
-    showToast("Maximum 30 fields per evaluation");
-    return false;
-  }
-  return true;
-}
-
 function validateNameInput(input, errorElement = null, message = "camelCase only — no underscores or spaces", showError = true) {
   const value = input.value.trim();
   const isEmpty = value === "";
@@ -451,333 +447,15 @@ function validateNameInput(input, errorElement = null, message = "camelCase only
   return { value, isEmpty, isValid };
 }
 
-function autoGrowTextarea(textarea) {
-  textarea.style.height = "auto";
-  textarea.style.height = `${Math.max(textarea.scrollHeight, 60)}px`;
-}
-
-function removeEntry(entry) {
-  entry.remove();
-  if (!entryNodes().length) createFieldRow("simple");
-  updateRunButtonState();
-}
-
-function entryHasContent(entry) {
-  if (entry.classList.contains("table-block")) {
-    return Boolean(
-      entry.querySelector("[data-field-name]").value.trim()
-        || tableColumns(entry).some(Boolean)
-        || tableRows(entry).flat().some(Boolean),
-    );
-  }
-  if (entry.classList.contains("list-block")) {
-    return Boolean(
-      entry.querySelector("[data-field-name]").value.trim() || listValues(entry).some(Boolean),
-    );
-  }
-  return Boolean(
-    entry.querySelector("[data-field-name]").value.trim()
-      || entry.querySelector("[data-field-value]").value.trim(),
-  );
-}
-
-function hasSubmittableEntry() {
-  return entryNodes().some((entry) => {
-    const name = entry.querySelector("[data-field-name]").value.trim();
-    return FIELD_NAME_PATTERN.test(name);
-  });
+function hasGoldenFields() {
+  const fields = state.goldenFields;
+  if (!fields) return false;
+  return Object.values(fields).some((value) => (isFlatObject(value) ? Object.keys(value).length > 0 : true));
 }
 
 function updateRunButtonState() {
   const hasRunId = els.runId.value.trim().length > 0;
-  entryNodes().forEach((entry) => {
-    validateNameInput(entry.querySelector("[data-field-name]"), null, undefined, false);
-  });
-  els.runButton.disabled = !(hasRunId && hasSubmittableEntry());
-  $$("#add-field-chips .chip").forEach((chip) => {
-    chip.disabled = entryCount() >= MAX_FIELDS;
-  });
-  renderJsonPreview();
-}
-
-/* ---------- Field entry: simple / multiline rows ---------- */
-
-function valueControlHtml(isMultiline, value) {
-  if (isMultiline) {
-    return `<textarea class="field-value textarea-input" data-field-value placeholder="Enter multiline value...">${escapeHtml(value)}</textarea>`;
-  }
-  return `<input class="field-value text-input" data-field-value type="text" placeholder="expected value" value="${escapeHtml(value)}" />`;
-}
-
-function wireValueControl(control) {
-  control.addEventListener("input", () => {
-    if (control.tagName === "TEXTAREA") autoGrowTextarea(control);
-    updateRunButtonState();
-  });
-  if (control.tagName === "TEXTAREA") autoGrowTextarea(control);
-}
-
-function toggleFieldRowType(row) {
-  const wrap = row.querySelector(".field-value-wrap");
-  const control = row.querySelector("[data-field-value]");
-  const currentValue = control.value;
-  const nextIsMultiline = row.dataset.entryType !== "multiline";
-  row.dataset.entryType = nextIsMultiline ? "multiline" : "simple";
-  const toggleButton = wrap.querySelector("[data-toggle-multiline]");
-  control.remove();
-  toggleButton.insertAdjacentHTML("beforebegin", valueControlHtml(nextIsMultiline, currentValue));
-  const newControl = wrap.querySelector("[data-field-value]");
-  wireValueControl(newControl);
-  toggleButton.title = `Switch to ${nextIsMultiline ? "single line" : "multiline"}`;
-  updateRunButtonState();
-}
-
-function createFieldRow(type = "simple", name = "", value = "") {
-  if (!ensureEntryLimit()) return null;
-  const isMultiline = type === "multiline";
-  const row = document.createElement("div");
-  row.className = "field-row";
-  row.dataset.entryType = isMultiline ? "multiline" : "simple";
-  row.innerHTML = `
-    <div class="field-name-wrap">
-      <input class="field-name text-input" data-field-name type="text" placeholder="fieldName" value="${escapeHtml(name)}" autocomplete="off" />
-      <small class="field-notice" data-field-notice></small>
-    </div>
-    <div class="field-value-wrap">
-      ${valueControlHtml(isMultiline, value)}
-      <button class="value-toggle" type="button" data-toggle-multiline title="Switch to ${isMultiline ? "single line" : "multiline"}">&#8597;</button>
-    </div>
-    <button class="remove-btn" type="button" data-remove title="Remove field">&times;</button>
-  `;
-  els.fieldRows.appendChild(row);
-  const nameInput = row.querySelector("[data-field-name]");
-  nameInput.addEventListener("input", () => {
-    validateNameInput(nameInput);
-    updateRunButtonState();
-  });
-  wireCamelCaseAutoCorrect(nameInput, () => row.querySelector("[data-field-notice]"));
-  wireValueControl(row.querySelector("[data-field-value]"));
-  row.querySelector("[data-toggle-multiline]").addEventListener("click", () => toggleFieldRowType(row));
-  row.querySelector("[data-remove]").addEventListener("click", () => removeEntry(row));
-  updateRunButtonState();
-  return row;
-}
-
-/* ---------- Field entry: table blocks ---------- */
-
-function tableColumns(block) {
-  return Array.from(block.querySelectorAll("[data-column-name]")).map((input) => input.value.trim());
-}
-
-function tableRows(block) {
-  return Array.from(block.querySelectorAll("[data-table-rows] tr")).map((row) => {
-    return Array.from(row.querySelectorAll("[data-cell]")).map((input) => input.value.trim());
-  });
-}
-
-function resizeColumnInput(input) {
-  input.size = Math.max(input.value.length || input.placeholder.length, 6);
-}
-
-function rebuildTableRows(block, existingRows = tableRows(block)) {
-  const columns = tableColumns(block);
-  const headerRow = block.querySelector("[data-column-headers]");
-  const rowsBody = block.querySelector("[data-table-rows]");
-  headerRow.innerHTML = `${columns.map((column) => `<th>${escapeHtml(column || "Column")}</th>`).join("")}<th></th>`;
-  rowsBody.innerHTML = "";
-  existingRows.forEach((rowValues) => addTableDataRow(block, rowValues, false));
-  const addRowButton = block.querySelector("[data-add-row]");
-  addRowButton.disabled = columns.length === 0 || tableRows(block).length >= MAX_TABLE_ROWS;
-}
-
-function addTableColumn(block, columnName = "") {
-  const columnsContainer = block.querySelector("[data-columns]");
-  if (columnsContainer.querySelectorAll("[data-column-name]").length >= MAX_TABLE_COLUMNS) {
-    showToast("Maximum 10 columns per table");
-    return;
-  }
-  const existingRows = tableRows(block);
-  const pill = document.createElement("span");
-  pill.className = "col-pill";
-  pill.innerHTML = `
-    <input class="col-pill__input" data-column-name type="text" placeholder="columnName" value="${escapeHtml(columnName)}" />
-    <button class="col-pill__remove" type="button" title="Remove column">&times;</button>
-  `;
-  columnsContainer.appendChild(pill);
-  const input = pill.querySelector("[data-column-name]");
-  resizeColumnInput(input);
-  input.addEventListener("input", () => {
-    const result = validateNameInput(input, null, undefined, false);
-    pill.classList.toggle("is-invalid", !result.isEmpty && !result.isValid);
-    resizeColumnInput(input);
-    rebuildTableRows(block);
-    updateRunButtonState();
-  });
-  wireCamelCaseAutoCorrect(input, () => block.querySelector("[data-columns-notice]"), () => {
-    resizeColumnInput(input);
-    pill.classList.remove("is-invalid");
-    rebuildTableRows(block);
-  });
-  pill.querySelector(".col-pill__remove").addEventListener("click", () => {
-    const columnIndex = Array.from(columnsContainer.children).indexOf(pill);
-    const currentRows = tableRows(block);
-    pill.remove();
-    const adjustedRows = currentRows.map((row) => row.filter((_cell, index) => index !== columnIndex));
-    rebuildTableRows(block, adjustedRows);
-    updateRunButtonState();
-  });
-  rebuildTableRows(block, existingRows);
-  updateRunButtonState();
-}
-
-function addTableDataRow(block, values = [], shouldUpdate = true) {
-  const columns = tableColumns(block);
-  if (!columns.length) {
-    showToast("Add at least one column first");
-    return;
-  }
-  if (tableRows(block).length >= MAX_TABLE_ROWS) {
-    showToast("Maximum 50 rows per table");
-    return;
-  }
-  const row = document.createElement("tr");
-  row.innerHTML = `
-    ${columns
-      .map((column, index) => `<td><input class="text-input" data-cell type="text" placeholder="${escapeHtml(column || "value")}" value="${escapeHtml(values[index] || "")}" /></td>`)
-      .join("")}
-    <td><button class="remove-btn" type="button" title="Remove row">&times;</button></td>
-  `;
-  block.querySelector("[data-table-rows]").appendChild(row);
-  row.querySelectorAll("[data-cell]").forEach((input) => input.addEventListener("input", updateRunButtonState));
-  row.querySelector("button").addEventListener("click", () => {
-    row.remove();
-    updateRunButtonState();
-  });
-  if (shouldUpdate) updateRunButtonState();
-}
-
-function createTableBlock(entry = {}) {
-  if (!ensureEntryLimit()) return null;
-  const block = document.createElement("div");
-  block.className = "table-block";
-  block.dataset.entryType = "table";
-  block.innerHTML = `
-    <div class="table-block__header">
-      <span class="table-tag">TABLE</span>
-      <div class="field-name-wrap">
-        <input class="field-name text-input" data-field-name type="text" placeholder="lineItems" value="${escapeHtml(entry.fieldName || "")}" autocomplete="off" />
-        <small class="field-notice" data-field-notice></small>
-      </div>
-      <div class="table-block__spacer"></div>
-      <button class="btn-add-column" type="button" data-add-column>+ add column</button>
-      <button class="remove-btn" type="button" data-remove title="Remove table">&times;</button>
-    </div>
-    <div class="col-pill-row" data-columns></div>
-    <small class="field-notice" data-columns-notice></small>
-    <table class="table-block__data">
-      <thead><tr data-column-headers></tr></thead>
-      <tbody data-table-rows></tbody>
-    </table>
-    <button class="add-row-link" type="button" data-add-row>+ add row</button>
-  `;
-  els.fieldRows.appendChild(block);
-  const nameInput = block.querySelector("[data-field-name]");
-  nameInput.addEventListener("input", () => {
-    validateNameInput(nameInput);
-    updateRunButtonState();
-  });
-  wireCamelCaseAutoCorrect(nameInput, () => block.querySelector("[data-field-notice]"));
-  block.querySelector("[data-add-column]").addEventListener("click", () => addTableColumn(block));
-  block.querySelector("[data-add-row]").addEventListener("click", () => addTableDataRow(block));
-  block.querySelector("[data-remove]").addEventListener("click", () => removeEntry(block));
-  (entry.columns || []).forEach((column) => addTableColumn(block, column));
-  (entry.rows || []).forEach((row) => addTableDataRow(block, row, false));
-  updateRunButtonState();
-  return block;
-}
-
-function listValues(block) {
-  return Array.from(block.querySelectorAll("[data-list-value]")).map((input) => input.value.trim());
-}
-
-function addListValueRow(block, value = "", shouldUpdate = true) {
-  if (listValues(block).length >= MAX_LIST_VALUES) {
-    showToast("Maximum 50 values per list");
-    return;
-  }
-  const row = document.createElement("div");
-  row.className = "list-value-row";
-  row.innerHTML = `
-    <input class="text-input" data-list-value type="text" placeholder="value" value="${escapeHtml(value)}" />
-    <button class="remove-btn" type="button" title="Remove value">&times;</button>
-  `;
-  block.querySelector("[data-list-values]").appendChild(row);
-  row.querySelector("[data-list-value]").addEventListener("input", updateRunButtonState);
-  row.querySelector("button").addEventListener("click", () => {
-    row.remove();
-    updateRunButtonState();
-  });
-  if (shouldUpdate) updateRunButtonState();
-}
-
-function createListBlock(entry = {}) {
-  if (!ensureEntryLimit()) return null;
-  const block = document.createElement("div");
-  block.className = "list-block";
-  block.dataset.entryType = "list";
-  block.innerHTML = `
-    <div class="list-block__header">
-      <span class="table-tag">LIST</span>
-      <div class="field-name-wrap">
-        <input class="field-name text-input" data-field-name type="text" placeholder="tags" value="${escapeHtml(entry.fieldName || "")}" autocomplete="off" />
-        <small class="field-notice" data-field-notice></small>
-      </div>
-      <div class="table-block__spacer"></div>
-      <button class="btn-add-column" type="button" data-add-value>+ add value</button>
-      <button class="remove-btn" type="button" data-remove title="Remove list">&times;</button>
-    </div>
-    <div class="list-values" data-list-values></div>
-  `;
-  els.fieldRows.appendChild(block);
-  const nameInput = block.querySelector("[data-field-name]");
-  nameInput.addEventListener("input", () => {
-    validateNameInput(nameInput);
-    updateRunButtonState();
-  });
-  wireCamelCaseAutoCorrect(nameInput, () => block.querySelector("[data-field-notice]"));
-  block.querySelector("[data-add-value]").addEventListener("click", () => addListValueRow(block));
-  block.querySelector("[data-remove]").addEventListener("click", () => removeEntry(block));
-  (entry.values || []).forEach((value) => addListValueRow(block, value, false));
-  updateRunButtonState();
-  return block;
-}
-
-function addEntryByType(type, data = {}) {
-  const normalizedType = type === "text_block" ? "multiline" : type === "line_items" ? "table" : type;
-  if (normalizedType === "multiline") {
-    return createFieldRow("multiline", data.fieldName || data.name || "", data.value || "");
-  }
-  if (normalizedType === "table") {
-    return createTableBlock(data);
-  }
-  if (normalizedType === "list") {
-    return createListBlock(data);
-  }
-  return createFieldRow("simple", data.fieldName || data.name || "", data.value || "");
-}
-
-function wireAddFieldChips() {
-  const chips = $$("#add-field-chips .chip");
-  chips.forEach((chip) => {
-    chip.addEventListener("click", () => {
-      const type = chip.dataset.addType;
-      if (type === "multiline") createFieldRow("multiline");
-      else if (type === "table") createTableBlock();
-      else if (type === "list") createListBlock();
-      else createFieldRow("simple");
-      chips.forEach((other) => other.classList.toggle("chip--active", other === chip));
-    });
-  });
+  els.runButton.disabled = !(hasRunId && hasGoldenFields());
 }
 
 /* ---------- Schema import ---------- */
@@ -785,60 +463,6 @@ function wireAddFieldChips() {
 const PLACEHOLDER_VALUE_PATTERN = /^(string|string or -|-|n\/a|na|null|none|)$/i;
 
 const CAMEL_CASE_CORRECT_DELAY = 900;
-
-function flashFieldNotice(element, message, duration = 2600) {
-  if (!element) return;
-  if (element._noticeTimeout) window.clearTimeout(element._noticeTimeout);
-  element.textContent = message;
-  element.classList.add("field-notice--visible");
-  element._noticeTimeout = window.setTimeout(() => {
-    element.classList.remove("field-notice--visible");
-  }, duration);
-}
-
-// Briefly pulses the input so an auto-correction reads as a deliberate,
-// visible change rather than a silent value swap.
-function flashCorrected(input) {
-  input.classList.remove("field-corrected");
-  void input.offsetWidth; // restart the CSS animation if it's already running
-  input.classList.add("field-corrected");
-  window.setTimeout(() => input.classList.remove("field-corrected"), 900);
-}
-
-function applyCamelCaseCorrection(input, getNoticeEl, onCorrected) {
-  const original = input.value.trim();
-  if (!original || FIELD_NAME_PATTERN.test(original)) return false;
-  const converted = toCamelCase(original);
-  if (!converted || !FIELD_NAME_PATTERN.test(converted) || converted === original) return false;
-  input.value = converted;
-  validateNameInput(input);
-  flashCorrected(input);
-  flashFieldNotice(getNoticeEl ? getNoticeEl() : null, `Converted to camelCase: "${converted}"`);
-  if (onCorrected) onCorrected();
-  updateRunButtonState();
-  return true;
-}
-
-// Converts a name to camelCase seamlessly - once typing pauses (like a
-// Grammarly-style live suggestion) or the field loses focus - so a manually
-// typed field/column name never silently fails validation. The raw text is
-// auto-corrected in place with a brief animated flash and a small transient
-// notice confirming what changed, instead of just leaving a red error state.
-function wireCamelCaseAutoCorrect(input, getNoticeEl, onCorrected) {
-  input.setAttribute("spellcheck", "false");
-  input.addEventListener("input", () => {
-    if (input._camelCaseTimer) window.clearTimeout(input._camelCaseTimer);
-    input._camelCaseTimer = window.setTimeout(() => {
-      if (document.activeElement === input) {
-        applyCamelCaseCorrection(input, getNoticeEl, onCorrected);
-      }
-    }, CAMEL_CASE_CORRECT_DELAY);
-  });
-  input.addEventListener("blur", () => {
-    if (input._camelCaseTimer) window.clearTimeout(input._camelCaseTimer);
-    applyCamelCaseCorrection(input, getNoticeEl, onCorrected);
-  });
-}
 
 function toCamelCase(key) {
   const withWordBoundaries = String(key ?? "")
@@ -937,473 +561,539 @@ const DOCTYPE_METADATA_KEYS = new Set([
   "filename",
 ]);
 
-function capitalizeFirst(text) {
-  return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+function setSchemaImportError(message) {
+  els.schemaImportError.textContent = message;
+  els.schemaImportError.classList.toggle("hidden", !message);
 }
 
-function parseDoctypeObject(fieldsObj, prefix = "") {
-  const scalarFields = [];
-  const tableFields = [];
-  const listFields = [];
-  const skipped = [];
-  const renamed = [];
-  Object.entries(fieldsObj).forEach(([rawKey, rawValue]) => {
-    const localName = toCamelCase(rawKey);
-    if (!localName || !FIELD_NAME_PATTERN.test(localName)) {
-      skipped.push(rawKey);
-      return;
-    }
-    if (rawKey !== localName) renamed.push({ from: rawKey, to: localName });
-    const fieldName = prefix ? `${prefix}${capitalizeFirst(localName)}` : localName;
-
-    if (Array.isArray(rawValue)) {
-      if (!rawValue.length) {
-        // Empty array - no example content to infer whether it's a table or a
-        // plain value list, so skip it rather than guess (e.g. *_confidence: []).
-        skipped.push(rawKey);
-        return;
-      }
-      if (Array.isArray(rawValue[0])) {
-        // Array of arrays - nested list structure isn't representable in the
-        // flat value-list UI, so skip rather than silently misrepresenting it.
-        skipped.push(rawKey);
-        return;
-      }
-      if (isFlatObject(rawValue[0])) {
-        // Table field - merge column names across every row in the template
-        // (not just the first) so rows with different shapes both contribute.
-        const columnKeys = new Set();
-        rawValue.forEach((row) => {
-          if (isFlatObject(row)) Object.keys(row).forEach((key) => columnKeys.add(key));
-        });
-        const columns = [];
-        const excludedColumns = [];
-        const nameToOriginalKey = {};
-        Array.from(columnKeys).forEach((columnKey) => {
-          const columnName = toCamelCase(columnKey);
-          const hasNestedValue = rawValue.some(
-            (row) => isFlatObject(row) && (isFlatObject(row[columnKey]) || Array.isArray(row[columnKey])),
-          );
-          if (!columnName || !FIELD_NAME_PATTERN.test(columnName) || hasNestedValue) {
-            excludedColumns.push(columnKey);
-            return;
-          }
-          if (columnKey !== columnName) renamed.push({ from: columnKey, to: columnName });
-          columns.push(columnName);
-          nameToOriginalKey[columnName] = columnKey;
-        });
-        if (!columns.length) {
-          // Every column was nested/unsupported - nothing left to import.
-          skipped.push(rawKey);
-          return;
-        }
-        excludedColumns.forEach((columnKey) => skipped.push(`${rawKey}.${columnKey}`));
-        // Carry the example row values through too (same as scalar fields do)
-        // so a pasted real example pre-fills the table instead of leaving it
-        // with columns but zero rows.
-        const rows = rawValue
-          .filter((row) => isFlatObject(row))
-          .map((row) =>
-            columns.map((columnName) => {
-              const cellValue = row[nameToOriginalKey[columnName]];
-              return isPlaceholderValue(cellValue) || cellValue === undefined ? "" : String(cellValue);
-            }),
-          );
-        tableFields.push({ fieldName, columns, rows });
-        return;
-      }
-      const hasEmbeddedStructure = rawValue.some((item) => isFlatObject(item) || Array.isArray(item));
-      if (hasEmbeddedStructure) {
-        // Mixed array (some plain values, some object/array items) - don't guess
-        // which shape it is; skip rather than silently discarding the odd ones out.
-        skipped.push(rawKey);
-        return;
-      }
-      listFields.push({ fieldName, values: [] });
-      return;
-    }
-
-    if (isFlatObject(rawValue)) {
-      // Nested plain object - recurse and flatten its fields under a compound
-      // prefixed name (e.g. object1.subfield1 -> object1Subfield1) instead of
-      // dropping the whole thing.
-      const nested = parseDoctypeObject(rawValue, fieldName);
-      scalarFields.push(...nested.scalarFields);
-      tableFields.push(...nested.tableFields);
-      listFields.push(...nested.listFields);
-      skipped.push(...nested.skipped.map((key) => `${rawKey}.${key}`));
-      renamed.push(...nested.renamed);
-      return;
-    }
-
-    scalarFields.push({ fieldName, value: isPlaceholderValue(rawValue) ? "" : String(rawValue) });
-  });
-  return { scalarFields, tableFields, listFields, skipped, renamed };
-}
-
-function parseSchemaTemplate(rawText) {
+// Parse only builds the live tree and paints the editor - it deliberately does
+// not touch the field rows. The pasted text is left untouched on failure so a
+// typo never costs the user the whole payload.
+function handleParseSchema() {
+  setSchemaImportError("");
+  const rawText = els.schemaImportInput.value.trim();
+  if (!rawText) {
+    setSchemaImportError("Paste a JSON schema first.");
+    return;
+  }
   let parsed;
   try {
     parsed = JSON.parse(rawText);
   } catch (error) {
-    throw new Error("Invalid JSON - check for missing commas, quotes, or brackets.");
-  }
-  if (!isFlatObject(parsed)) {
-    throw new Error("Paste a JSON object, not an array or a plain value.");
-  }
-
-  // Real exports commonly wrap the actual documents in one or more single-key
-  // envelopes (e.g. { success, caseSummary: { summaryText: { taxInvoice: [...] } } }).
-  // Drill down to the level that actually holds the document types before
-  // looking for them, instead of only ever checking the outermost level.
-  const unwrapped = unwrapToDoctypeLevel(parsed);
-
-  const topEntries = Object.entries(unwrapped);
-  if (!topEntries.length) {
-    throw new Error("The pasted JSON has no fields.");
-  }
-
-  // DocsAI metadata keys (extractionConfidence, documentType, ...) commonly sit
-  // alongside the real document-type wrappers at the top level. Ignore them when
-  // deciding whether every remaining key looks like a document type, so a stray
-  // metadata field doesn't force the whole payload into one flattened doctype.
-  const relevantEntries = topEntries.filter(([key]) => !DOCTYPE_METADATA_KEYS.has(String(key).toLowerCase()));
-  const entriesToCheck = relevantEntries.length ? relevantEntries : topEntries;
-
-  // A doctype wrapper is a plain object ("invoice": {...}) or DocsAI's
-  // single-document-in-an-array export style ("taxInvoice": [{...}]). Treating
-  // a *_confidence-style single-object array as a "table" was the bug that made
-  // every field of a document collapse into one giant, empty-looking table.
-  const allWrapped = entriesToCheck.every(([, value]) => isDoctypeWrapper(value));
-
-  const combined = { scalarFields: [], tableFields: [], listFields: [], skipped: [], renamed: [], sharedNames: [] };
-  const usedScalarNames = new Set();
-  let label;
-
-  // Union two column lists (preserving first-seen order) and remap every row
-  // from both sides onto the combined column set, so merging two same-named
-  // tables never drops a column or a row - it produces one table wide enough
-  // to hold whichever shape shows up in the run actually being evaluated.
-  const remapRow = (row, fromColumns, toColumns) =>
-    toColumns.map((column) => {
-      const index = fromColumns.indexOf(column);
-      return index === -1 ? "" : row[index] || "";
-    });
-
-  const mergeTableField = (existing, incoming) => {
-    const mergedColumns = [...existing.columns];
-    incoming.columns.forEach((column) => {
-      if (!mergedColumns.includes(column)) mergedColumns.push(column);
-    });
-    const mergedRows = [
-      ...(existing.rows || []).map((row) => remapRow(row, existing.columns, mergedColumns)),
-      ...(incoming.rows || []).map((row) => remapRow(row, incoming.columns, mergedColumns)),
-    ];
-    existing.columns = mergedColumns;
-    existing.rows = mergedRows;
-  };
-
-  const mergeListField = (existing, incoming) => {
-    const seen = new Set(existing.values || []);
-    (incoming.values || []).forEach((value) => {
-      if (!seen.has(value)) {
-        seen.add(value);
-        existing.values.push(value);
-      }
-    });
-  };
-
-  // Field names must exactly match whatever DocsAI's own extraction would use
-  // (e.g. "invoiceNo", "lineItems") so the evaluator can pair golden values up
-  // against the real extracted fields by name. Never prefix a field with its
-  // parent document type - that would produce names DocsAI never returns
-  // (e.g. "taxInvoiceInvoiceNo"), making every field show up as missing.
-  //
-  // Two document types can legitimately share a field name (e.g. both
-  // taxInvoice and purchaseOrder have their own "lineItems" or "poNo"). A
-  // table/list with the same name is merged (union of columns/values) so no
-  // data is lost. A scalar can only hold one value under one key, so the
-  // first one wins and the collision is reported once instead of silently
-  // dropped per field.
-  const addScalar = (field) => {
-    if (usedScalarNames.has(field.fieldName)) {
-      combined.sharedNames.push(field.fieldName);
-      return;
-    }
-    usedScalarNames.add(field.fieldName);
-    combined.scalarFields.push(field);
-  };
-  const addTable = (field) => {
-    const existing = combined.tableFields.find((item) => item.fieldName === field.fieldName);
-    if (existing) {
-      mergeTableField(existing, field);
-      return;
-    }
-    combined.tableFields.push(field);
-  };
-  const addList = (field) => {
-    const existing = combined.listFields.find((item) => item.fieldName === field.fieldName);
-    if (existing) {
-      mergeListField(existing, field);
-      return;
-    }
-    combined.listFields.push(field);
-  };
-
-  const mergeIn = (parsedFields, keyPrefix) => {
-    parsedFields.scalarFields.forEach(addScalar);
-    parsedFields.tableFields.forEach(addTable);
-    parsedFields.listFields.forEach(addList);
-    combined.renamed.push(...parsedFields.renamed);
-    combined.skipped.push(...parsedFields.skipped.map((key) => (keyPrefix ? `${keyPrefix}.${key}` : key)));
-  };
-
-  // Parses one document-type wrapper entry and merges its fields in,
-  // unprefixed. A wrapper with no example content at all (e.g. "purchaseOrder": [])
-  // is still surfaced as a presence-only field instead of silently vanishing.
-  const mergeDoctypeEntry = (key, value) => {
-    const localName = toCamelCase(key);
-    if (!localName || !FIELD_NAME_PATTERN.test(localName)) {
-      combined.skipped.push(key);
-      return null;
-    }
-    const parsedDoctype = parseDoctypeObject(doctypeWrapperFields(value));
-    if (!parsedDoctype.scalarFields.length && !parsedDoctype.tableFields.length && !parsedDoctype.listFields.length) {
-      addList({ fieldName: localName, values: [] });
-      return key;
-    }
-    mergeIn(parsedDoctype, key);
-    return key;
-  };
-
-  if (allWrapped && entriesToCheck.length > 1) {
-    // Multiple sibling document types (e.g. taxInvoice + purchaseOrder +
-    // proformaInvoice all in the same case) - merge every one into a single
-    // combined field set so everything shows up together instead of behind
-    // separate tabs, keeping each field's own name unprefixed.
-    const labels = [];
-    entriesToCheck.forEach(([key, value]) => {
-      const usedLabel = mergeDoctypeEntry(key, value);
-      if (usedLabel) labels.push(usedLabel);
-    });
-    label = labels.join(", ") || "Fields";
-  } else if (allWrapped && entriesToCheck.length === 1) {
-    const [key] = entriesToCheck[0];
-    mergeDoctypeEntry(key, entriesToCheck[0][1]);
-    label = key;
-  } else {
-    // Not every top-level key is a document-type wrapper - treat the whole
-    // object as one document's fields directly. Any array-of-object key here
-    // (e.g. lineItems) is handled by parseDoctypeObject as a repeating table.
-    mergeIn(parseDoctypeObject(unwrapped), null);
-    label = "Fields";
-  }
-
-  if (!combined.scalarFields.length && !combined.tableFields.length && !combined.listFields.length) {
-    throw new Error("No supported fields were found in the pasted JSON.");
-  }
-
-  return { label, ...combined };
-}
-
-function renderSchemaSummary(parsedSchema) {
-  if (!parsedSchema) {
-    els.schemaImportGenerated.classList.add("hidden");
-    els.schemaImportGenerated.innerHTML = "";
+    setSchemaImportError(`Invalid JSON - ${error.message}`);
     return;
   }
-  const parts = [];
-  if (parsedSchema.scalarFields.length) parts.push(`${parsedSchema.scalarFields.length} field${parsedSchema.scalarFields.length === 1 ? "" : "s"}`);
-  if (parsedSchema.tableFields.length) parts.push(`${parsedSchema.tableFields.length} table${parsedSchema.tableFields.length === 1 ? "" : "s"}`);
-  if (parsedSchema.listFields.length) parts.push(`${parsedSchema.listFields.length} list${parsedSchema.listFields.length === 1 ? "" : "s"}`);
-  const summary = parts.length ? parts.join(", ") : "No supported fields";
-  els.schemaImportGenerated.classList.remove("hidden");
-  let html = `<p class="schema-import-summary">${escapeHtml(parsedSchema.label)}: ${escapeHtml(summary)} added to Expected field values below - edit them there.</p>`;
-  if (parsedSchema.renamed && parsedSchema.renamed.length) {
-    const examples = parsedSchema.renamed.slice(0, 3).map((item) => `${item.from} → ${item.to}`).join(", ");
-    const more = parsedSchema.renamed.length > 3 ? ` and ${parsedSchema.renamed.length - 3} more` : "";
-    html += `<p class="schema-import-summary schema-import-summary--info">${parsedSchema.renamed.length} field name${parsedSchema.renamed.length === 1 ? "" : "s"} converted to camelCase (${escapeHtml(examples)}${escapeHtml(more)}).</p>`;
-  }
-  if (parsedSchema.sharedNames && parsedSchema.sharedNames.length) {
-    const uniqueShared = [...new Set(parsedSchema.sharedNames)];
-    html += `<p class="schema-import-summary schema-import-summary--warning">${uniqueShared.join(", ")} ${uniqueShared.length === 1 ? "appears" : "appear"} in more than one document type with a different value - kept the first one. Edit it below if you need the other value.</p>`;
-  }
-  if (parsedSchema.skipped && parsedSchema.skipped.length) {
-    html += `<p class="schema-import-summary schema-import-summary--warning">Could not import: ${escapeHtml(parsedSchema.skipped.join(", "))}.</p>`;
-  }
-  els.schemaImportGenerated.innerHTML = html;
-}
-
-function clearSchemaGeneratedEntries() {
-  Array.from(els.fieldRows.querySelectorAll('[data-schema-generated="true"]')).forEach((node) => node.remove());
-}
-
-function schemaGeneratedEntriesHaveContent() {
-  return Array.from(els.fieldRows.querySelectorAll('[data-schema-generated="true"]')).some((node) => entryHasContent(node));
-}
-
-async function seedParsedSchemaIntoFieldRows(parsedSchema) {
-  if (schemaGeneratedEntriesHaveContent()) {
-    const confirmed = await showConfirmDialog(
-      "Re-parsing will replace your previously imported field values. Continue?",
-      { okLabel: "Replace", danger: false },
-    );
-    if (!confirmed) return;
-  }
-  clearSchemaGeneratedEntries();
-  renderSchemaSummary(parsedSchema);
-
-  parsedSchema.scalarFields.forEach((field) => {
-    const node = addEntryByType("simple", { fieldName: field.fieldName, value: field.value });
-    if (node) node.dataset.schemaGenerated = "true";
-  });
-  parsedSchema.tableFields.forEach((tableField) => {
-    const node = addEntryByType("table", {
-      fieldName: tableField.fieldName,
-      columns: tableField.columns,
-      rows: tableField.rows || [],
-    });
-    if (node) node.dataset.schemaGenerated = "true";
-  });
-  parsedSchema.listFields.forEach((listField) => {
-    const node = addEntryByType("list", { fieldName: listField.fieldName, values: [] });
-    if (node) node.dataset.schemaGenerated = "true";
-  });
-
+  state.jsonEditor.root = parsed;
+  state.jsonEditor.isActive = true;
+  // Parsing alone does not submit anything - drop any summary and preview from
+  // a previous Apply so they can never describe a stale payload.
+  clearGoldenSummary();
+  state.goldenFields = null;
+  renderJsonPreview();
   updateRunButtonState();
+  renderJsonEditor();
 }
 
-async function handleParseSchema() {
-  els.schemaImportError.classList.add("hidden");
-  const rawText = els.schemaImportInput.value.trim();
-  if (!rawText) {
-    els.schemaImportError.textContent = "Paste a JSON schema first.";
-    els.schemaImportError.classList.remove("hidden");
-    return;
-  }
+// Apply regenerates the JSON from the live edited tree and adopts it as the
+// golden fields that get submitted. Document types are kept separate - the
+// backend compares each one against its own extracted document.
+function handleApplySchema() {
+  if (!state.jsonEditor.isActive) return;
+  setSchemaImportError("");
+  els.schemaImportInput.value = JSON.stringify(state.jsonEditor.root, null, 2);
   try {
-    const parsedSchema = parseSchemaTemplate(rawText);
-    await seedParsedSchemaIntoFieldRows(parsedSchema);
+    const golden = buildGoldenFieldsFromTree(state.jsonEditor.root);
+    state.goldenFields = golden.fields;
+    renderGoldenSummary(golden);
+    renderJsonPreview();
+    updateRunButtonState();
+    showToast("Applied - these fields will be submitted");
   } catch (error) {
-    els.schemaImportError.textContent = error.message;
-    els.schemaImportError.classList.remove("hidden");
+    setSchemaImportError(error.message);
   }
 }
 
 function wireSchemaImport() {
   els.schemaImportParseButton.addEventListener("click", handleParseSchema);
+  els.schemaImportApplyButton.addEventListener("click", handleApplySchema);
+  wireJsonEditor();
 }
 
-/* ---------- Collect + validate golden fields ---------- */
+/* ---------- Golden fields from the edited JSON tree ---------- */
 
-function collectGoldenFields(showErrors = false) {
-  const fields = {};
-  const entries = [];
-  const errors = [];
-  const warnings = [];
-  const names = new Set();
+// Values are submitted as-is: strings keep their newlines, numbers/booleans are
+// stringified only at the edge, and null becomes "" because the evaluator
+// compares text. Nothing is merged or renamed, so what the preview shows is
+// exactly what is POSTed.
+function goldenScalarValue(value) {
+  if (value === null || value === undefined) return "";
+  return String(value);
+}
 
-  entryNodes().forEach((entry) => {
-    const isTable = entry.classList.contains("table-block");
-    const type = isTable ? "table" : entry.dataset.entryType || "simple";
-    const nameInput = entry.querySelector("[data-field-name]");
-    let nameResult = validateNameInput(nameInput, null, undefined, showErrors);
-    if (showErrors && !nameResult.isEmpty && !nameResult.isValid) {
-      // Last-resort safety net so a name that never got a blur or debounce
-      // pass (e.g. submitted via Enter right after typing) still reaches the
-      // backend as valid camelCase. Gated to showErrors (real submission)
-      // only - this function also runs on every keystroke to refresh the
-      // live JSON preview, and mutating the input there would fight the
-      // smooth debounced correction in wireCamelCaseAutoCorrect.
-      const converted = toCamelCase(nameResult.value);
-      if (converted && FIELD_NAME_PATTERN.test(converted)) {
-        nameInput.value = converted;
-        nameResult = validateNameInput(nameInput, null, undefined, showErrors);
-        flashCorrected(nameInput);
-        flashFieldNotice(entry.querySelector("[data-field-notice]"), `Converted to camelCase: "${converted}"`);
-      }
-    }
-    const name = nameResult.value;
-
-    if (!name && type !== "table" && type !== "list") return;
-    if (!name && !entryHasContent(entry)) return;
-    if (!name && entryHasContent(entry)) {
-      errors.push("Field name is required for entries with values");
-      return;
-    }
-    if (!nameResult.isValid) {
-      errors.push(`${name || "Field name"} must be camelCase`);
-      return;
-    }
-    if (names.has(name)) {
-      errors.push(`Field name '${name}' is used more than once. Each field name must be unique.`);
-      return;
-    }
-    names.add(name);
-
-    if (type === "table") {
-      const columns = tableColumns(entry);
-      const validColumns = [];
-      let hasColumnError = false;
-      entry.querySelectorAll("[data-column-name]").forEach((input) => {
-        let result = validateNameInput(input, null, undefined, showErrors);
-        if (showErrors && !result.isEmpty && !result.isValid) {
-          const converted = toCamelCase(result.value);
-          if (converted && FIELD_NAME_PATTERN.test(converted)) {
-            input.value = converted;
-            result = validateNameInput(input, null, undefined, showErrors);
-            flashCorrected(input);
-            flashFieldNotice(entry.querySelector("[data-columns-notice]"), `Converted to camelCase: "${converted}"`);
-          }
-        }
-        if (!result.isValid) hasColumnError = true;
-        validColumns.push(result.value);
-      });
-      if (!columns.length) {
-        errors.push(`Table '${name}' has no columns. Add at least one column before running evaluation.`);
-        return;
-      }
-      if (hasColumnError) {
-        errors.push(`${name}: column names must be camelCase`);
-        return;
-      }
-      const rows = tableRows(entry).filter((row) => row.some((cell) => cell.trim() !== ""));
-      if (!rows.length) {
-        warnings.push(`Table ${name} has no rows - it will check only that the field exists in extraction output`);
-      }
-      fields[name] = rows.map((row) => Object.fromEntries(validColumns.map((column, index) => [column, row[index] || ""])));
-      entries.push({ type: "table", fieldName: name, columns: validColumns, rows });
-      return;
-    }
-
-    if (type === "list") {
-      const values = listValues(entry).filter((value) => value !== "");
-      if (!values.length) {
-        warnings.push(`List ${name} has no values - it will check only that the field exists in extraction output`);
-      }
-      fields[name] = values;
-      entries.push({ type: "list", fieldName: name, values });
-      return;
-    }
-
-    const value = entry.querySelector("[data-field-value]").value.trim();
-    fields[name] = value;
-    entries.push({ type, fieldName: name, value });
+function goldenTableRows(rows) {
+  return rows.map((row) => {
+    const cells = {};
+    Object.entries(row).forEach(([column, cellValue]) => {
+      if (!isJsonContainer(cellValue)) cells[column] = goldenScalarValue(cellValue);
+    });
+    return cells;
   });
+}
 
-  if (!entries.length) errors.push("Add at least one field to evaluate");
-  return { fields, entries, errors, warnings, validCount: entries.length };
+// Converts one document's field object into the flat field map the evaluator
+// compares. Row lists stay row lists, plain lists stay plain lists.
+function goldenFieldsForDocument(fieldsObj, skipped, docLabel) {
+  const fields = {};
+  Object.entries(fieldsObj).forEach(([key, value]) => {
+    if (Array.isArray(value)) {
+      if (value.length && value.every((item) => isFlatObject(item))) {
+        fields[key] = goldenTableRows(value);
+        return;
+      }
+      if (value.some((item) => isJsonContainer(item))) {
+        // Mixed or nested-array content has no flat representation the
+        // evaluator can compare cell by cell.
+        skipped.push(`${docLabel}${key}`);
+        return;
+      }
+      fields[key] = value.map(goldenScalarValue);
+      return;
+    }
+    if (isFlatObject(value)) {
+      // A nested object inside a document is not a document type of its own;
+      // the evaluator has no field shape for it.
+      skipped.push(`${docLabel}${key}`);
+      return;
+    }
+    fields[key] = goldenScalarValue(value);
+  });
+  return fields;
+}
+
+// Builds the exact golden_fields payload from the edited tree. Sibling document
+// types stay separate (taxInvoice/purchaseOrder each keep their own poNo and
+// lineItems) instead of being merged into one colliding flat map.
+function buildGoldenFieldsFromTree(root) {
+  if (!isFlatObject(root)) {
+    throw new Error("The JSON must be an object at the top level.");
+  }
+  const unwrapped = unwrapToDoctypeLevel(root);
+  const entries = Object.entries(unwrapped).filter(
+    ([key]) => !DOCTYPE_METADATA_KEYS.has(String(key).toLowerCase()),
+  );
+  if (!entries.length) {
+    throw new Error("The pasted JSON has no fields.");
+  }
+
+  const skipped = [];
+  const grouped = entries.every(([, value]) => isDoctypeWrapper(value));
+  if (!grouped) {
+    // A single flat document - submit it flat, exactly as before.
+    const fields = goldenFieldsForDocument(unwrapped, skipped, "");
+    if (!Object.keys(fields).length) throw new Error("No supported fields were found in the pasted JSON.");
+    return { fields, grouped: false, docTypes: [], skipped };
+  }
+
+  const fields = {};
+  const docTypes = [];
+  entries.forEach(([docType, wrapper]) => {
+    const docFields = goldenFieldsForDocument(doctypeWrapperFields(wrapper), skipped, `${docType}.`);
+    fields[docType] = docFields;
+    docTypes.push({ name: docType, count: Object.keys(docFields).length });
+  });
+  if (!docTypes.some((doc) => doc.count)) {
+    throw new Error("No supported fields were found in the pasted JSON.");
+  }
+  return { fields, grouped: true, docTypes, skipped };
+}
+
+function clearGoldenSummary() {
+  if (!els.schemaImportGenerated) return;
+  els.schemaImportGenerated.innerHTML = "";
+  els.schemaImportGenerated.classList.add("hidden");
+}
+
+function renderGoldenSummary(golden) {
+  if (!els.schemaImportGenerated) return;
+  const parts = golden.grouped
+    ? golden.docTypes.map((doc) => `${escapeHtml(doc.name)} (${doc.count} field${doc.count === 1 ? "" : "s"})`)
+    : [`${Object.keys(golden.fields).length} fields`];
+  let html = `<p class="schema-import-summary">Will submit: ${parts.join(", ")}.</p>`;
+  if (golden.grouped) {
+    html += `<p class="schema-import-summary schema-import-summary--info">Each document type is compared against its own extracted document, so same-named fields (e.g. poNo, lineItems) stay separate.</p>`;
+  }
+  if (golden.skipped.length) {
+    html += `<p class="schema-import-summary schema-import-summary--warning">Not submitted (no comparable shape): ${escapeHtml(golden.skipped.join(", "))}.</p>`;
+  }
+  els.schemaImportGenerated.innerHTML = html;
+  els.schemaImportGenerated.classList.remove("hidden");
+}
+
+/* ---------- JSON tree: type model + immutable path updates ---------- */
+
+// The six JSON shapes the editor branches on. Objects and arrays are
+// containers; everything else is a leaf the user edits directly.
+function jsonValueType(value) {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  const type = typeof value;
+  return type === "object" ? "object" : type;
+}
+
+function isJsonContainer(value) {
+  const type = jsonValueType(value);
+  return type === "object" || type === "array";
+}
+
+function cloneContainer(container) {
+  return Array.isArray(container) ? container.slice() : { ...container };
+}
+
+function getAtPath(root, path) {
+  return path.reduce((node, key) => (node == null ? undefined : node[key]), root);
+}
+
+// Returns a new tree with `path` replaced. Every container along the way is
+// copied, so no node the UI still holds a reference to is ever mutated.
+function setAtPath(root, path, value) {
+  if (!path.length) return value;
+  const [key, ...rest] = path;
+  const copy = cloneContainer(root);
+  copy[key] = setAtPath(copy[key], rest, value);
+  return copy;
+}
+
+// Removes exactly one key/index. Arrays splice (so later items shift down by
+// one and keep contiguous indices) rather than leaving a hole; objects delete.
+function deleteAtPath(root, path) {
+  if (!path.length) return root;
+  const parentPath = path.slice(0, -1);
+  const key = path[path.length - 1];
+  const parent = getAtPath(root, parentPath);
+  if (!isJsonContainer(parent)) return root;
+  const copy = cloneContainer(parent);
+  if (Array.isArray(copy)) copy.splice(Number(key), 1);
+  else delete copy[key];
+  return setAtPath(root, parentPath, copy);
+}
+
+// Renames a key in place - rebuilding the object in its original order so the
+// renamed field does not jump to the end. Refuses empty names and collisions
+// instead of silently overwriting the existing key.
+function renameKey(obj, oldKey, newKey) {
+  const trimmed = String(newKey ?? "").trim();
+  if (!trimmed) return { ok: false, error: "Field name cannot be empty." };
+  if (trimmed === oldKey) return { ok: true, value: obj };
+  if (Object.prototype.hasOwnProperty.call(obj, trimmed)) {
+    return { ok: false, error: `"${trimmed}" already exists in this object.` };
+  }
+  const renamed = {};
+  Object.entries(obj).forEach(([key, value]) => {
+    renamed[key === oldKey ? trimmed : key] = value;
+  });
+  return { ok: true, value: renamed };
+}
+
+function defaultValueForType(type) {
+  if (type === "number") return 0;
+  if (type === "boolean") return false;
+  if (type === "object") return {};
+  if (type === "array") return [];
+  return "";
+}
+
+// Builds a blank value with the same shape as `sample`, so adding a row to an
+// array of line-item objects yields another object with the same columns rather
+// than a bare empty string.
+function emptyLikeValue(sample) {
+  const type = jsonValueType(sample);
+  if (type === "object") {
+    const skeleton = {};
+    Object.entries(sample).forEach(([key, value]) => {
+      skeleton[key] = emptyLikeValue(value);
+    });
+    return skeleton;
+  }
+  if (type === "array") return [];
+  return defaultValueForType(type);
+}
+
+function nextAvailableKey(obj, base = "newField") {
+  if (!Object.prototype.hasOwnProperty.call(obj, base)) return base;
+  let suffix = 1;
+  while (Object.prototype.hasOwnProperty.call(obj, `${base}${suffix}`)) suffix += 1;
+  return `${base}${suffix}`;
+}
+
+/* ---------- JSON tree editor ---------- */
+
+function jsonPathAttr(path) {
+  return escapeHtml(JSON.stringify(path));
+}
+
+function jsonPathOf(element) {
+  try {
+    return JSON.parse(element.dataset.jsonPath || "[]");
+  } catch (error) {
+    return [];
+  }
+}
+
+function jsonLeafHtml(value, type, pathAttr) {
+  if (type === "boolean") {
+    return `
+      <label class="json-leaf json-leaf--boolean">
+        <input type="checkbox" data-json-leaf data-json-type="boolean" data-json-path="${pathAttr}" ${value ? "checked" : ""} />
+        <span class="json-leaf__bool" data-json-bool-text>${value ? "true" : "false"}</span>
+      </label>
+    `;
+  }
+  if (type === "number") {
+    return `<input class="text-input json-leaf json-leaf--number" type="number" data-json-leaf data-json-type="number" data-json-path="${pathAttr}" value="${escapeHtml(String(value))}" />`;
+  }
+  if (type === "null") {
+    // Null keeps its own identity until the user explicitly picks a real type -
+    // it is never quietly coerced into an empty string.
+    return `
+      <span class="json-leaf json-leaf--null">
+        <span class="json-null-tag">null</span>
+        <select class="json-null-select" data-json-null-type data-json-path="${pathAttr}">
+          <option value="">Set value...</option>
+          <option value="string">Text</option>
+          <option value="number">Number</option>
+          <option value="boolean">Boolean</option>
+          <option value="object">Object</option>
+          <option value="array">Array</option>
+        </select>
+      </span>
+    `;
+  }
+  // A single-line <input> cannot render embedded newlines, so a multi-line
+  // string gets a textarea. Without this the value still POSTs correctly but
+  // reads as one run-together line in the editor.
+  const text = String(value);
+  if (text.includes("\n")) {
+    return `<textarea class="textarea-input json-leaf json-leaf--text" rows="${Math.min(text.split("\n").length, 6)}" data-json-leaf data-json-type="string" data-json-path="${pathAttr}">${escapeHtml(text)}</textarea>`;
+  }
+  return `<input class="text-input json-leaf json-leaf--string" type="text" data-json-leaf data-json-type="string" data-json-path="${pathAttr}" value="${escapeHtml(text)}" />`;
+}
+
+// Turns a camelCase/snake_case key into a human label ("clientId" -> "Client
+// ID") purely for display - the underlying key text is untouched and is what
+// still shows (and is editable) in the rename input below the label.
+function jsonKeyLabel(key) {
+  const words = String(key)
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .split(/\s+/);
+  if (!words.length || !words[0]) return String(key);
+  return words.map((word) => (word ? word.charAt(0).toUpperCase() + word.slice(1) : word)).join(" ");
+}
+
+// One key/index slot inside a container: a compact label/key column plus a
+// recursive node for whatever value it holds, at any depth. Leaves render as
+// a single label+input row; containers render their own nested block below
+// the label so deep structure reads as an indented outline, not stacked cards.
+function jsonKvpHtml(key, value, path, isArrayItem) {
+  const pathAttr = jsonPathAttr(path);
+  const childIsContainer = isJsonContainer(value);
+  // The human-readable label is the primary, always-visible text. The raw
+  // key stays editable via a same-styled input that is visually quiet until
+  // hovered/focused, so renaming doesn't require a second control fighting
+  // the label for space.
+  const label = isArrayItem
+    ? `<span class="json-kvp__index">${escapeHtml(String(key))}</span>`
+    : `<input class="json-kvp__key" data-json-key data-json-path="${pathAttr}" type="text" value="${escapeHtml(String(key))}" title="${escapeHtml(jsonKeyLabel(key))}" autocomplete="off" spellcheck="false" />`;
+  if (childIsContainer) {
+    return `
+      <div class="json-kvp json-kvp--container">
+        <div class="json-kvp__row">
+          <div class="json-kvp__label-group">${label}</div>
+          <button class="json-remove-link" type="button" data-json-remove data-json-path="${pathAttr}" title="Remove ${isArrayItem ? "item" : "field"}">Remove</button>
+        </div>
+        ${jsonNodeHtml(value, path)}
+      </div>
+    `;
+  }
+  return `
+    <div class="json-kvp">
+      <div class="json-kvp__label-group">${label}</div>
+      <div class="json-kvp__value">${jsonNodeHtml(value, path)}</div>
+      <button class="remove-btn" type="button" data-json-remove data-json-path="${pathAttr}" title="Remove ${isArrayItem ? "item" : "field"}">&times;</button>
+    </div>
+  `;
+}
+
+// Recursively renders one node by type. Containers recurse into their children
+// inside an indented, rail-guided block; leaves render the control matching
+// their type. Depth is shown once via indentation, not via a new card border
+// at every level - only an array-of-objects (e.g. line items) gets its own
+// tinted sub-block, since that's the one shape dense enough to need one.
+function jsonNodeHtml(value, path, options = {}) {
+  const type = jsonValueType(value);
+  const pathAttr = jsonPathAttr(path);
+  if (!isJsonContainer(value)) {
+    return `<div class="json-node json-node--leaf">${jsonLeafHtml(value, type, pathAttr)}</div>`;
+  }
+  const isArray = type === "array";
+  const entries = isArray ? value.map((item, index) => [index, item]) : Object.entries(value);
+  const noun = isArray ? "item" : "field";
+  const isRoot = path.length === 0;
+  const isItemGroup = isArray && entries.length > 0 && entries.every(([, item]) => isFlatObject(item));
+  const wrapperClass = ["json-node", `json-node--${type}`, isRoot ? "json-node--root" : "", isItemGroup ? "json-node--item-group" : ""]
+    .filter(Boolean)
+    .join(" ");
+  const body = entries.length
+    ? `<div class="json-node__children">${entries.map(([key, child]) => jsonKvpHtml(key, child, [...path, key], isArray)).join("")}</div>`
+    : `<p class="json-node__empty">Empty ${isArray ? "array" : "object"} - nothing to edit yet.</p>`;
+  const countLabel = options.hideCount ? "" : `<span class="json-node__count">${entries.length} ${noun}${entries.length === 1 ? "" : "s"}</span>`;
+  return `
+    <div class="${wrapperClass}">
+      ${isRoot ? "" : `<div class="json-node__rail"></div>`}
+      <div class="json-node__body">
+        <div class="json-node__head">
+          ${countLabel}
+          <button class="json-add-link" type="button" data-json-add data-json-path="${pathAttr}">+ Add ${noun}</button>
+        </div>
+        ${body}
+      </div>
+    </div>
+  `;
+}
+
+function captureJsonEditorFocus() {
+  const active = document.activeElement;
+  if (!active || !els.schemaImportEditor.contains(active)) return null;
+  return {
+    path: active.dataset.jsonPath || "",
+    selector: active.hasAttribute("data-json-key") ? "[data-json-key]" : "[data-json-leaf]",
+  };
+}
+
+function restoreJsonEditorFocus(focus) {
+  if (!focus) return;
+  const match = Array.from(els.schemaImportEditor.querySelectorAll(focus.selector))
+    .find((element) => element.dataset.jsonPath === focus.path);
+  if (match) match.focus();
+}
+
+function renderJsonEditor() {
+  if (!els.schemaImportEditor) return;
+  const { root, isActive } = state.jsonEditor;
+  els.schemaImportEditor.classList.toggle("hidden", !isActive);
+  els.schemaImportApplyRow.classList.toggle("hidden", !isActive);
+  if (!isActive) {
+    els.schemaImportEditor.innerHTML = "";
+    return;
+  }
+  const focus = captureJsonEditorFocus();
+  els.schemaImportEditor.innerHTML = jsonNodeHtml(root, []);
+  restoreJsonEditorFocus(focus);
+}
+
+// Structural edits (add/remove/rename/retype) swap in a new tree and repaint.
+// Leaf edits deliberately skip the repaint - see onJsonEditorInput.
+function replaceJsonTree(nextRoot) {
+  state.jsonEditor.root = nextRoot;
+  renderJsonEditor();
+}
+
+function handleJsonAdd(path) {
+  const target = getAtPath(state.jsonEditor.root, path);
+  if (Array.isArray(target)) {
+    // Infer the new item from the existing first element, falling back to text
+    // for an empty array, so item type is preserved instead of always defaulting.
+    const nextItem = target.length ? emptyLikeValue(target[0]) : "";
+    replaceJsonTree(setAtPath(state.jsonEditor.root, path, [...target, nextItem]));
+    return;
+  }
+  if (isFlatObject(target)) {
+    replaceJsonTree(setAtPath(state.jsonEditor.root, path, { ...target, [nextAvailableKey(target)]: "" }));
+  }
+}
+
+function handleJsonRename(input) {
+  const path = jsonPathOf(input);
+  const parentPath = path.slice(0, -1);
+  const oldKey = path[path.length - 1];
+  const parent = getAtPath(state.jsonEditor.root, parentPath);
+  if (!isFlatObject(parent)) return;
+  const result = renameKey(parent, oldKey, input.value);
+  if (!result.ok) {
+    input.value = oldKey;
+    input.classList.add("is-invalid");
+    showToast(result.error);
+    return;
+  }
+  input.classList.remove("is-invalid");
+  replaceJsonTree(setAtPath(state.jsonEditor.root, parentPath, result.value));
+}
+
+// Leaf typing writes straight into the tree without repainting, so the caret
+// and selection survive every keystroke.
+function onJsonEditorInput(event) {
+  const leaf = event.target.closest("[data-json-leaf]");
+  if (!leaf) return;
+  const path = jsonPathOf(leaf);
+  if (leaf.dataset.jsonType === "number") {
+    // Cast back to a real number. A half-typed or empty entry is flagged and
+    // held rather than written through as a string.
+    const isValid = leaf.value.trim() !== "" && Number.isFinite(Number(leaf.value));
+    leaf.classList.toggle("is-invalid", !isValid);
+    if (isValid) state.jsonEditor.root = setAtPath(state.jsonEditor.root, path, Number(leaf.value));
+    return;
+  }
+  if (leaf.dataset.jsonType === "string") {
+    state.jsonEditor.root = setAtPath(state.jsonEditor.root, path, leaf.value);
+  }
+}
+
+function onJsonEditorChange(event) {
+  const target = event.target;
+  if (target.matches('[data-json-leaf][data-json-type="boolean"]')) {
+    state.jsonEditor.root = setAtPath(state.jsonEditor.root, jsonPathOf(target), target.checked);
+    const label = target.parentElement.querySelector("[data-json-bool-text]");
+    if (label) label.textContent = target.checked ? "true" : "false";
+    return;
+  }
+  if (target.matches("[data-json-null-type]") && target.value) {
+    replaceJsonTree(setAtPath(state.jsonEditor.root, jsonPathOf(target), defaultValueForType(target.value)));
+    return;
+  }
+  // Renames apply on commit, not per keystroke, so a half-typed name is never
+  // treated as a collision.
+  if (target.matches("[data-json-key]")) handleJsonRename(target);
+}
+
+function onJsonEditorClick(event) {
+  const addButton = event.target.closest("[data-json-add]");
+  if (addButton) {
+    handleJsonAdd(jsonPathOf(addButton));
+    return;
+  }
+  const removeButton = event.target.closest("[data-json-remove]");
+  if (removeButton) replaceJsonTree(deleteAtPath(state.jsonEditor.root, jsonPathOf(removeButton)));
+}
+
+// Delegated once on the container - nodes at any depth are handled without
+// re-wiring listeners on every repaint.
+function wireJsonEditor() {
+  if (!els.schemaImportEditor) return;
+  els.schemaImportEditor.addEventListener("input", onJsonEditorInput);
+  els.schemaImportEditor.addEventListener("change", onJsonEditorChange);
+  els.schemaImportEditor.addEventListener("click", onJsonEditorClick);
 }
 
 /* ---------- JSON preview ---------- */
 
-// Shows the exact flat golden_fields object that would be submitted for
-// evaluation - not a wrapped/guessed document-type shape, so what you see
-// here is literally what gets sent.
+// Shows the exact golden_fields object that will be POSTed - the same value
+// runEvaluation sends, rendered verbatim. Nothing is re-derived or reshaped
+// here, so the preview can never disagree with what is submitted.
 function renderJsonPreview() {
   if (!els.jsonPreviewOutput) return;
-  const { fields } = collectGoldenFields(false);
-  const isEmpty = !Object.keys(fields).length;
+  const fields = state.goldenFields;
+  const isEmpty = !fields || !Object.keys(fields).length;
   els.jsonPreviewOutput.classList.toggle("hidden", isEmpty);
   els.jsonPreviewEmpty.classList.toggle("hidden", !isEmpty);
   if (!isEmpty) els.jsonPreviewOutput.textContent = JSON.stringify(fields, null, 2);
@@ -1456,35 +1146,25 @@ function saveSessionFields(runId, fields) {
   sessionStorage.setItem(`${RESTORE_PREFIX}${runId}`, JSON.stringify(fields));
 }
 
+// Restores the saved JSON tree back into the editor, then re-derives the
+// golden fields from it - so a restored session goes through exactly the same
+// path as a fresh paste and cannot drift from what would be submitted.
 function restoreSessionFields() {
   const key = restoreStorageKey();
   if (!key) return;
   const raw = sessionStorage.getItem(key);
   if (!raw) return;
   try {
-    const savedEntries = JSON.parse(raw);
-    els.fieldRows.innerHTML = "";
-    let restoredCount = 0;
-    if (Array.isArray(savedEntries)) {
-      savedEntries.forEach((entry) => {
-        try {
-          addEntryByType(entry.type || "simple", entry);
-          restoredCount += 1;
-        } catch (error) {
-          console.error("Skipping field entry that failed to restore from session storage:", entry, error);
-        }
-      });
-    } else {
-      Object.entries(savedEntries).forEach(([field, value]) => {
-        try {
-          createFieldRow("simple", field, value);
-          restoredCount += 1;
-        } catch (error) {
-          console.error("Skipping field entry that failed to restore from session storage:", field, error);
-        }
-      });
-    }
-    if (!restoredCount) createFieldRow("simple");
+    const savedTree = JSON.parse(raw);
+    state.jsonEditor.root = savedTree;
+    state.jsonEditor.isActive = true;
+    els.schemaImportInput.value = JSON.stringify(savedTree, null, 2);
+    renderJsonEditor();
+    const golden = buildGoldenFieldsFromTree(savedTree);
+    state.goldenFields = golden.fields;
+    renderGoldenSummary(golden);
+    renderJsonPreview();
+    updateRunButtonState();
     els.restorePrompt.classList.add("hidden");
     showToast("Previous values restored");
   } catch (error) {
@@ -1638,28 +1318,27 @@ function renderRunResult(report) {
 async function runEvaluation(event) {
   event.preventDefault();
   clearBanner(els.runMessageBanner);
-  const { fields, entries, errors, warnings } = collectGoldenFields(true);
+  const fields = state.goldenFields;
   if (!els.runId.value.trim()) {
     setBanner(els.runMessageBanner, "Enter a DocsAI Run ID before running evaluation.", "error");
     return;
   }
-  if (errors.length) {
-    setBanner(els.runMessageBanner, errors.join(" | "), "error");
+  if (!hasGoldenFields()) {
+    setBanner(els.runMessageBanner, "Paste a JSON schema, click Parse, then Apply before running evaluation.", "error");
     return;
   }
-  if (warnings.length) setBanner(els.runMessageBanner, warnings.join(" | "), "warning");
   setResultStatus("RUNNING", "warning");
   setButtonLoading(els.runButton, true, "Running evaluation...");
   startProgressMessages();
   try {
     const runId = els.runId.value.trim();
     const report = await api.runEvaluation({ run_id: runId, golden_fields: fields });
-    saveSessionFields(runId, entries);
+    saveSessionFields(runId, state.jsonEditor.root);
     rememberCurrentRun(report);
     renderRunResult(report);
     renderLatest(report);
     setResultStatus("COMPLETE", "success");
-    if (!warnings.length) setBanner(els.runMessageBanner, "Evaluation completed successfully.", "success");
+    setBanner(els.runMessageBanner, "Evaluation completed successfully.", "success");
     await Promise.all([loadSummary(), loadReports()]);
     openReportModal(report);
   } catch (error) {
@@ -2236,9 +1915,30 @@ function wireSidePanelTabs() {
   });
 }
 
+// Adds a field from the "detected fields" hints into the edited JSON tree.
+// Everything funnels through the same tree the editor renders, so a hint-added
+// field is submitted identically to a pasted one.
+function addDetectedFieldToTree(fieldName, blankValue) {
+  if (!state.jsonEditor.isActive || !isFlatObject(state.jsonEditor.root)) {
+    state.jsonEditor.root = {};
+    state.jsonEditor.isActive = true;
+  }
+  const root = state.jsonEditor.root;
+  // With grouped doctypes there is no single obvious parent, so add to the
+  // first document type when one exists, otherwise at the top level.
+  const [firstDocType] = Object.entries(root)
+    .filter(([key]) => !DOCTYPE_METADATA_KEYS.has(String(key).toLowerCase()))
+    .filter(([, value]) => isDoctypeWrapper(value))
+    .map(([key]) => key);
+  const path = firstDocType
+    ? [firstDocType, ...(Array.isArray(root[firstDocType]) ? [0] : []), fieldName]
+    : [fieldName];
+  replaceJsonTree(setAtPath(state.jsonEditor.root, path, blankValue));
+  els.schemaImportInput.value = JSON.stringify(state.jsonEditor.root, null, 2);
+  showToast(`Added ${fieldName} - click Apply to submit it`);
+}
+
 function wireEvaluationForm() {
-  createFieldRow("simple");
-  wireAddFieldChips();
   wireSidePanelTabs();
   wireSchemaImport();
   els.loadFieldsButton.addEventListener("click", loadRunFields);
@@ -2248,16 +1948,17 @@ function wireEvaluationForm() {
     if (tableButton) {
       const fieldName = tableButton.dataset.tableHint;
       const meta = state.fieldMetadata[fieldName] || {};
-      createTableBlock({ fieldName, columns: meta.field_schema || [], rows: [] });
+      const columns = meta.field_schema || [];
+      const blankRow = Object.fromEntries(columns.map((column) => [column, ""]));
+      addDetectedFieldToTree(fieldName, columns.length ? [blankRow] : []);
       return;
     }
     const pill = event.target.closest("[data-field]");
     if (!pill) return;
-    addEntryByType(pill.dataset.entryType || "simple", { fieldName: pill.dataset.field, value: "" });
+    addDetectedFieldToTree(pill.dataset.field, "");
   });
   els.runId.addEventListener("input", () => {
-    const hasEntries = entryNodes().some((entry) => entryHasContent(entry));
-    if (!els.runId.value.trim() && hasEntries) {
+    if (!els.runId.value.trim() && hasGoldenFields()) {
       setBanner(els.runFieldsBanner, "Clearing run ID will keep your field entries. Change the run ID to re-run with new data.", "error");
     } else {
       clearBanner(els.runFieldsBanner);
